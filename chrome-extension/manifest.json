@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Read Aloud – Send to App",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Read the current page, a text selection, hand-picked paragraphs, or a PDF aloud via your Read Aloud app.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -17,7 +17,7 @@
     "default_title": "Read Aloud",
     "default_popup": "popup.html"
   },
-  "permissions": ["contextMenus", "tabs", "scripting"],
+  "permissions": ["contextMenus", "tabs", "scripting", "storage"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

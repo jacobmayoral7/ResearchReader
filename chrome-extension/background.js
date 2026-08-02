@@ -135,14 +135,19 @@ function startInPageReader(payload) {
       " z-index: 2147483647; background: #201f25; color: #ece9e2;" +
       " font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;" +
       " border-radius: 14px; box-shadow: 0 8px 30px rgba(0,0,0,0.4);" +
-      " padding: 10px 14px; width: min(92vw, 480px); box-sizing: border-box; }" +
-      ".row { display: flex; align-items: center; gap: 8px; }" +
+      " padding: 10px 14px; width: min(94vw, 460px); box-sizing: border-box; }" +
+      ".row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }" +
+      ".row:first-child { margin-top: 0; }" +
       "button { background: #a8492a; color: #fff; border: none; border-radius: 8px;" +
       " padding: 6px 10px; cursor: pointer; font-size: 13px; font-family: inherit; line-height: 1; }" +
       "button:disabled { opacity: 0.4; cursor: default; }" +
       "button.secondary { background: #34323a; color: #ece9e2; }" +
-      "input[type=range] { flex: 1; accent-color: #a8492a; }" +
+      "input[type=range] { flex: 1; accent-color: #a8492a; min-width: 60px; }" +
+      "select { flex: 1; background: #34323a; color: #ece9e2; border: 1px solid #4a4750;" +
+      " border-radius: 6px; padding: 4px 6px; font-size: 12px; font-family: inherit; min-width: 0; }" +
       ".label { font-size: 11px; color: #9a958c; white-space: nowrap; }" +
+      ".checklabel { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #d8d3c9; cursor: pointer; }" +
+      ".checklabel input { accent-color: #a8492a; }" +
       ".hint { font-size: 11.5px; color: #9a958c; margin-top: 8px; line-height: 1.4; }" +
       ".text { font-size: 12.5px; color: #d8d3c9; margin-top: 8px; max-height: 4.2em;" +
       " overflow: hidden; line-height: 1.4; }" +
@@ -155,8 +160,83 @@ function startInPageReader(payload) {
       return { host: host, shadow: host.attachShadow({ mode: "open" }) };
     }
 
-    // ---- Reading UI: play/pause/stop/speed over a fixed list of sentences ----
-    function startReadingSentences(sentences) {
+    // ---- Reading UI: play/pause/stop/speed/pitch/voice/skip-citations over a
+    // fixed list of sentences. Preferences persist via chrome.storage.local
+    // (not page localStorage), so they carry over between different sites.
+    async function startReadingSentences(sentences) {
+      const HIGH_QUALITY_HINTS = /enhanced|premium|neural|natural|hd|wavenet/i;
+      const NOVELTY_VOICE_NAMES = new Set([
+        "Albert", "Bad News", "Bahh", "Bells", "Boing", "Bubbles", "Cellos", "Fred",
+        "Good News", "Jester", "Junior", "Kathy", "Organ", "Ralph", "Superstar",
+        "Trinoids", "Whisper", "Wobble", "Zarvox",
+      ]);
+      function voiceScore(v) {
+        let score = 0;
+        if (HIGH_QUALITY_HINTS.test(v.name)) score += 100;
+        if (/google/i.test(v.name)) score += 40;
+        if (NOVELTY_VOICE_NAMES.has(v.name.split(" (")[0].trim())) score -= 100;
+        if (v.localService === false) score += 10;
+        if (v.default) score += 5;
+        return score;
+      }
+      function getVoicesAsync() {
+        return new Promise(function (resolve) {
+          const existing = window.speechSynthesis.getVoices();
+          if (existing.length) return resolve(existing);
+          const timer = setTimeout(function () {
+            resolve(window.speechSynthesis.getVoices());
+          }, 800);
+          window.speechSynthesis.onvoiceschanged = function () {
+            clearTimeout(timer);
+            resolve(window.speechSynthesis.getVoices());
+          };
+        });
+      }
+      function stripCitationsAndAsides(t) {
+        let result = t;
+        let prev;
+        do {
+          prev = result;
+          result = result.replace(/\([^()]*\)/g, "");
+        } while (result !== prev);
+        do {
+          prev = result;
+          result = result.replace(/\[[^\[\]]*\]/g, "");
+        } while (result !== prev);
+        return result
+          .replace(/\s+([,.;:!?])(?!\d)/g, "$1")
+          .replace(/\s{2,}/g, " ")
+          .trim();
+      }
+
+      let prefs = {};
+      try {
+        prefs = await chrome.storage.local.get(["voiceURI", "skipParens", "rate", "pitch"]);
+      } catch (e) {
+        prefs = {};
+      }
+      const initialRate = prefs.rate || 1;
+      const initialPitch = prefs.pitch || 1;
+
+      const voices = await getVoicesAsync();
+      const englishVoices = voices.filter(function (v) {
+        return v.lang && v.lang.startsWith("en");
+      });
+      const pool = englishVoices.length ? englishVoices : voices;
+      const scored = pool
+        .map(function (v) {
+          return { v: v, score: voiceScore(v) };
+        })
+        .sort(function (a, b) {
+          return b.score - a.score || a.v.name.localeCompare(b.v.name);
+        });
+      const recommended = scored.filter(function (s) {
+        return s.score >= 0;
+      });
+      const other = scored.filter(function (s) {
+        return s.score < 0;
+      });
+
       const ov = makeOverlay();
       const host = ov.host;
       const shadow = ov.shadow;
@@ -167,17 +247,66 @@ function startInPageReader(payload) {
         '<button id="playpause" title="Play/Pause">▶</button>' +
         '<button id="stop" class="secondary" title="Stop">⏹</button>' +
         '<span class="label">Speed</span>' +
-        '<input id="rate" type="range" min="0.5" max="2.5" step="0.1" value="1" />' +
-        '<span class="label" id="rate-label">1.0×</span>' +
+        '<input id="rate" type="range" min="0.5" max="2.5" step="0.1" value="' + initialRate + '" />' +
+        '<span class="label" id="rate-label">' + parseFloat(initialRate).toFixed(1) + '×</span>' +
         '<button id="close" class="close" title="Close">✕</button>' +
+        "</div>" +
+        '<div class="row">' +
+        '<span class="label">Pitch</span>' +
+        '<input id="pitch" type="range" min="0" max="2" step="0.1" value="' + initialPitch + '" />' +
+        '<span class="label" id="pitch-label">' + parseFloat(initialPitch).toFixed(1) + "</span>" +
+        "</div>" +
+        '<div class="row"><select id="voice"></select></div>' +
+        '<div class="row">' +
+        '<label class="checklabel"><input type="checkbox" id="skip-parens"' +
+        (prefs.skipParens ? " checked" : "") +
+        " /> Skip citations &amp; (parentheses)</label>" +
         "</div>" +
         '<div class="text" id="current-text"></div>' +
         "</div>";
 
+      const voiceSelect = shadow.getElementById("voice");
+      function addGroup(label, list) {
+        if (!list.length) return;
+        const group = document.createElement("optgroup");
+        group.label = label;
+        list.forEach(function (s) {
+          const opt = document.createElement("option");
+          opt.value = s.v.voiceURI;
+          opt.textContent = s.v.name + " (" + s.v.lang + ")";
+          group.appendChild(opt);
+        });
+        voiceSelect.appendChild(group);
+      }
+      addGroup("Recommended", recommended);
+      addGroup("Other voices", other);
+      if (
+        prefs.voiceURI &&
+        Array.prototype.some.call(voiceSelect.options, function (o) {
+          return o.value === prefs.voiceURI;
+        })
+      ) {
+        voiceSelect.value = prefs.voiceURI;
+      } else if (recommended.length) {
+        voiceSelect.value = recommended[0].v.voiceURI;
+      }
+
       const playBtn = shadow.getElementById("playpause");
       const rateInput = shadow.getElementById("rate");
       const rateLabel = shadow.getElementById("rate-label");
+      const pitchInput = shadow.getElementById("pitch");
+      const pitchLabel = shadow.getElementById("pitch-label");
+      const skipParensInput = shadow.getElementById("skip-parens");
       const textEl = shadow.getElementById("current-text");
+
+      function currentVoice() {
+        const uri = voiceSelect.value;
+        return (
+          voices.find(function (v) {
+            return v.voiceURI === uri;
+          }) || null
+        );
+      }
 
       let idx = 0;
       let playing = false;
@@ -190,9 +319,18 @@ function startInPageReader(payload) {
           return;
         }
         idx = i;
-        textEl.textContent = sentences[i];
-        const u = new SpeechSynthesisUtterance(sentences[i]);
+        const raw = sentences[i];
+        textEl.textContent = raw;
+        const spoken = skipParensInput.checked ? stripCitationsAndAsides(raw) : raw;
+        if (!spoken) {
+          if (playing) speak(i + 1);
+          return;
+        }
+        const u = new SpeechSynthesisUtterance(spoken);
         u.rate = parseFloat(rateInput.value);
+        u.pitch = parseFloat(pitchInput.value);
+        const voice = currentVoice();
+        if (voice) u.voice = voice;
         u.onend = function () {
           if (playing) speak(i + 1);
         };
@@ -225,6 +363,23 @@ function startInPageReader(payload) {
 
       rateInput.addEventListener("input", function () {
         rateLabel.textContent = parseFloat(rateInput.value).toFixed(1) + "×";
+        chrome.storage.local.set({ rate: parseFloat(rateInput.value) });
+        if (playing) speak(idx);
+      });
+
+      pitchInput.addEventListener("input", function () {
+        pitchLabel.textContent = parseFloat(pitchInput.value).toFixed(1);
+        chrome.storage.local.set({ pitch: parseFloat(pitchInput.value) });
+        if (playing) speak(idx);
+      });
+
+      voiceSelect.addEventListener("change", function () {
+        chrome.storage.local.set({ voiceURI: voiceSelect.value });
+        if (playing) speak(idx);
+      });
+
+      skipParensInput.addEventListener("change", function () {
+        chrome.storage.local.set({ skipParens: skipParensInput.checked });
         if (playing) speak(idx);
       });
 

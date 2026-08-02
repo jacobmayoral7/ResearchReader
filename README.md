@@ -60,12 +60,17 @@ without a connection.
 `chrome-extension/` is a small Manifest V3 extension that adds a toolbar popup with:
 
 - **Read selected text**, **Read this page aloud**, and **Pick paragraphs to
-  read** all read *right there on the page* — a small floating player
-  (play/pause, stop, speed) is injected directly into the tab you're on, so you
-  can keep following along on the actual page instead of being sent anywhere
-  else. "Read selected text" only appears (in the popup, and as a right-click
-  option) when you've actually selected some text; otherwise it stays out of
-  the way.
+  read** all read *right there on the page* — a floating player is injected
+  directly into the tab you're on, so you can keep following along on the
+  actual page instead of being sent anywhere else. "Read selected text" only
+  appears (in the popup, and as a right-click option) when you've actually
+  selected some text; otherwise it stays out of the way.
+- The floating player has the same controls as the main app: play/pause, stop,
+  speed, pitch, a voice picker (sorted so natural-sounding Enhanced/Premium/
+  Neural/network voices come first), and a "skip citations & (parentheses)"
+  toggle. These preferences are saved in the extension's own storage — not the
+  page's — so they carry over between different sites instead of resetting on
+  every domain.
 - **Pick paragraphs to read** turns on a picking mode: hover highlights
   clickable paragraphs, clicking one adds it to a numbered reading queue (click
   again to remove it), and the queue reads back in the order you clicked —
