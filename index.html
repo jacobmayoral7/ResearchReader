@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Read Aloud — Research Reader</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- LIBRARY VIEW -->
+  <section id="library-view" class="view">
+    <header class="topbar">
+      <h1>📚 Read Aloud</h1>
+      <div class="topbar-actions">
+        <button id="theme-toggle" class="icon-btn" title="Toggle dark/light">🌙</button>
+        <label class="btn primary" for="file-input">+ Upload PDF</label>
+        <input type="file" id="file-input" accept="application/pdf" hidden />
+      </div>
+    </header>
+
+    <div id="upload-progress" class="upload-progress hidden">
+      <div class="upload-progress-label">Parsing PDF…</div>
+      <div class="progress-bar"><div id="upload-progress-fill" class="progress-fill"></div></div>
+    </div>
+
+    <div id="empty-state" class="empty-state">
+      <p>No documents yet.</p>
+      <p class="muted">Upload a PDF (a paper, chapter, or book for class) and it'll show up here.</p>
+    </div>
+
+    <div id="doc-grid" class="doc-grid"></div>
+  </section>
+
+  <!-- READER VIEW -->
+  <section id="reader-view" class="view hidden">
+    <header class="topbar">
+      <button id="back-btn" class="icon-btn" title="Back to library">← Library</button>
+      <h2 id="reader-title" class="reader-title">Untitled</h2>
+      <div class="topbar-actions">
+        <button id="font-dec" class="icon-btn" title="Smaller text">A−</button>
+        <button id="font-inc" class="icon-btn" title="Larger text">A+</button>
+        <button id="theme-toggle-2" class="icon-btn" title="Toggle dark/light">🌙</button>
+      </div>
+    </header>
+
+    <div id="reader-progress" class="reader-progress">
+      <span id="progress-text">Sentence 0 / 0</span>
+      <div class="progress-bar"><div id="reader-progress-fill" class="progress-fill"></div></div>
+    </div>
+
+    <div id="reading-pane" class="reading-pane" tabindex="0"></div>
+
+    <footer class="controls">
+      <div class="controls-row transport">
+        <button id="prev-btn" class="icon-btn" title="Previous sentence (←)">⏮</button>
+        <button id="play-btn" class="btn primary big" title="Play/Pause (Space)">▶ Play</button>
+        <button id="stop-btn" class="icon-btn" title="Stop">⏹</button>
+        <button id="next-btn" class="icon-btn" title="Next sentence (→)">⏭</button>
+      </div>
+
+      <div class="controls-row sliders">
+        <label class="slider-label">
+          Speed <span id="rate-value">1.0×</span>
+          <input type="range" id="rate-slider" min="0.5" max="3" step="0.1" value="1" />
+        </label>
+        <label class="slider-label">
+          Pitch <span id="pitch-value">1.0</span>
+          <input type="range" id="pitch-slider" min="0" max="2" step="0.1" value="1" />
+        </label>
+        <label class="slider-label voice-label">
+          Voice
+          <select id="voice-select"></select>
+        </label>
+        <label class="slider-label toggle-label" title="Don't read text inside parentheses aloud, e.g. statistics like (r = .05, d = .2)">
+          <span class="toggle-row">
+            <input type="checkbox" id="skip-parens" />
+            Skip (parentheses)
+          </span>
+        </label>
+      </div>
+    </footer>
+  </section>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
