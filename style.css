@@ -274,6 +274,42 @@ html, body {
   background: var(--highlight);
 }
 
+.reading-pane .type-heading {
+  display: block;
+  font-weight: 700;
+  font-size: 1.1em;
+  margin-top: 22px;
+  margin-bottom: 6px;
+}
+
+.reading-pane .type-title {
+  display: block;
+  font-weight: 700;
+  font-size: 1.3em;
+  margin-bottom: 4px;
+}
+
+.reading-pane .type-author {
+  display: block;
+  font-style: italic;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.reading-pane .type-boilerplate {
+  display: block;
+  color: var(--muted);
+  font-size: 0.75em;
+}
+
+.reading-pane.skip-extras-active .type-title,
+.reading-pane.skip-extras-active .type-author,
+.reading-pane.skip-extras-active .type-boilerplate {
+  opacity: 0.4;
+  text-decoration: line-through;
+  text-decoration-color: var(--muted);
+}
+
 .reading-pane .page-marker {
   display: block;
   color: var(--muted);

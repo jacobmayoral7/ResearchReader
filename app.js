@@ -65,7 +65,7 @@ const els = {};
   "reader-title", "reading-pane", "progress-text", "reader-progress-fill",
   "play-btn", "stop-btn", "prev-btn", "next-btn", "rate-slider", "rate-value",
   "pitch-slider", "pitch-value", "voice-select", "theme-toggle", "theme-toggle-2",
-  "font-inc", "font-dec", "skip-parens",
+  "font-inc", "font-dec", "skip-parens", "skip-extras",
 ].forEach(id => { els[id] = document.getElementById(id); });
 
 // ---------- Theme ----------
@@ -102,39 +102,248 @@ function initFontSize() {
 }
 
 // ---------- Sentence splitting ----------
+// Common academic abbreviations whose periods shouldn't be treated as sentence
+// endings (otherwise "et al." or "p." would wrongly split the sentence).
+const ABBREVIATIONS = [
+  "et al.", "e.g.", "i.e.", "cf.", "vs.", "approx.", "Fig.", "Eq.", "No.",
+  "Vol.", "pp.", "p.", "Dr.", "Mr.", "Mrs.", "Ms.", "Prof.", "Inc.", "Ltd.",
+  "Jr.", "Sr.", "St.", "etc.",
+];
+const SENTENCE_SPLIT_PLACEHOLDER = "";
+
 function splitSentences(text) {
-  const matches = text.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g);
-  return matches ? matches.map(s => s.trim()).filter(Boolean) : [];
+  let masked = text;
+
+  // Protect decimal points, including leading-dot stats notation (p < .001, d = .62),
+  // from being mistaken for sentence-ending periods.
+  masked = masked.replace(/(\d)\.(\d)/g, `$1${SENTENCE_SPLIT_PLACEHOLDER}$2`);
+  masked = masked.replace(/([\s(=<>])\.(\d)/g, `$1${SENTENCE_SPLIT_PLACEHOLDER}$2`);
+
+  ABBREVIATIONS.forEach(abbr => {
+    const escaped = abbr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(escaped, "gi");
+    masked = masked.replace(re, m => m.slice(0, -1) + SENTENCE_SPLIT_PLACEHOLDER);
+  });
+
+  const matches = masked.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g);
+  if (!matches) return [];
+  const unmask = new RegExp(SENTENCE_SPLIT_PLACEHOLDER, "g");
+  return matches.map(s => s.replace(unmask, ".").trim()).filter(Boolean);
 }
 
-// Removes parenthetical asides (e.g. inline stats like "(r = .05, d = .2)")
-// from text before it's spoken. Display text is left untouched.
-function stripParensForSpeech(text) {
-  return text
-    .replace(/\([^()]*\)/g, "")
-    .replace(/\s+([,.;:!?])/g, "$1")
+// Removes parenthetical asides (inline stats like "(r = .05, d = .2)", citations
+// like "(Smith et al., 2020)") and bracketed citation markers (like "[12]" or
+// "[12,13]") from text before it's spoken. Display text is left untouched.
+function stripCitationsAndAsides(text) {
+  let result = text;
+  let prev;
+  // Loop so nested groups like "(F(1, 243) = 12.4, p < .001)" fully strip
+  // (each pass only removes the innermost, unnested group).
+  do {
+    prev = result;
+    result = result.replace(/\([^()]*\)/g, "");
+  } while (result !== prev);
+  do {
+    prev = result;
+    result = result.replace(/\[[^\[\]]*\]/g, "");
+  } while (result !== prev);
+
+  return result
+    .replace(/\s+([,.;:!?])(?!\d)/g, "$1") // don't touch decimals like "< .001"
     .replace(/\s{2,}/g, " ")
     .trim();
 }
 
 // ---------- PDF extraction ----------
+// Groups a page's text items into lines using their y-position, tracking each
+// line's font size (for heading detection) and boldness.
+function groupItemsIntoLines(items, pageNum) {
+  const lines = [];
+  let current = null;
+  let lastY = null;
+  const Y_TOL = 2;
+
+  items.forEach(item => {
+    const str = item.str;
+    if (!str || !str.trim()) {
+      if (item.hasEOL && current) { lines.push(current); current = null; lastY = null; }
+      return;
+    }
+    const y = item.transform[5];
+    const fontSize = Math.hypot(item.transform[2], item.transform[3]) || item.height || 0;
+    const bold = /bold/i.test(item.fontName || "");
+
+    if (current && lastY !== null && Math.abs(y - lastY) <= Y_TOL) {
+      current.text += (current.text.endsWith(" ") ? "" : " ") + str;
+      current.fontSize = Math.max(current.fontSize, fontSize);
+      current.bold = current.bold || bold;
+    } else {
+      if (current) lines.push(current);
+      current = { text: str, page: pageNum, fontSize, bold };
+    }
+    lastY = y;
+    if (item.hasEOL) {
+      lines.push(current);
+      current = null;
+      lastY = null;
+    }
+  });
+  if (current) lines.push(current);
+
+  return lines
+    .map(l => ({ ...l, text: l.text.replace(/\s+/g, " ").trim() }))
+    .filter(l => l.text);
+}
+
+// The most common font size (weighted by text length) is treated as body text size.
+function computeBodyFontSize(lines) {
+  const counts = new Map();
+  lines.forEach(l => {
+    const rounded = Math.round(l.fontSize * 2) / 2;
+    counts.set(rounded, (counts.get(rounded) || 0) + l.text.length);
+  });
+  let best = 12, bestCount = -1;
+  counts.forEach((count, size) => {
+    if (count > bestCount) { bestCount = count; best = size; }
+  });
+  return best;
+}
+
+function isHeadingLine(line, bodySize) {
+  const wordCount = line.text.split(/\s+/).length;
+  if (wordCount > 20) return false;
+  const sizeRatio = line.fontSize / (bodySize || 1);
+  if (sizeRatio >= 1.15) return true;
+  if (line.bold && sizeRatio >= 0.98 && wordCount <= 12) return true;
+  return false;
+}
+
+// Running headers/footers, copyright lines, DOIs, page numbers, journal/volume
+// info, and submission-date lines — the administrative clutter around a paper,
+// not its content.
+const BOILERPLATE_PATTERNS = [
+  /copyright/i,
+  /all rights reserved/i,
+  /^©/,
+  /\bdoi\.org\b/i,
+  /\b10\.\d{4,9}\/\S+/,
+  /\bissn\b/i,
+  /downloaded from/i,
+  /terms and conditions/i,
+  /creativecommons/i,
+  /licen[sc]e/i,
+  /^vol(ume)?\.?\s*\d+/i,
+  /^no\.?\s*\d+(,|\s|$)/i,
+  /^\d{1,4}$/,
+  /\b(received|accepted|revised|submitted|published)\b.{0,30}\b(19|20)\d{2}\b/i,
+];
+
+function isBoilerplateLine(text, repeatCount, totalPages) {
+  if (BOILERPLATE_PATTERNS.some(re => re.test(text))) return true;
+  // A short line that repeats verbatim (aside from page numbers) across 2+ pages
+  // is almost always a running header/footer, not real content.
+  const wordCount = text.split(/\s+/).length;
+  if (totalPages >= 2 && repeatCount >= 2 && wordCount <= 20) return true;
+  return false;
+}
+
+// Classifies every line into title / author / heading / boilerplate / body,
+// so playback can announce headings and skip the non-content parts.
+function buildSentences(lines, bodySize, totalPages) {
+  const repeatMap = new Map();
+  lines.forEach(l => {
+    const key = l.text.toLowerCase().replace(/\d+/g, "#").trim();
+    if (!repeatMap.has(key)) repeatMap.set(key, new Set());
+    repeatMap.get(key).add(l.page);
+  });
+
+  const sentences = [];
+  let phase = "before-title"; // page-1 only: before-title -> front-matter -> done
+  let currentPage = null;
+
+  // Consecutive body lines are just typographic line-wraps within a paragraph —
+  // buffer them and split into sentences together, so a sentence spanning a
+  // line-wrap doesn't get cut into fragments at every line break.
+  let bodyBuffer = [];
+  function flushBody() {
+    if (!bodyBuffer.length) return;
+    const text = bodyBuffer.map(b => b.text).join(" ");
+    const page = bodyBuffer[bodyBuffer.length - 1].page;
+    splitSentences(text).forEach(s => sentences.push({ text: s, page, type: "body" }));
+    bodyBuffer = [];
+  }
+
+  lines.forEach(line => {
+    if (line.page !== currentPage) {
+      currentPage = line.page;
+      if (currentPage !== 1) phase = "done";
+    }
+
+    const key = line.text.toLowerCase().replace(/\d+/g, "#").trim();
+    const repeatCount = repeatMap.get(key)?.size || 0;
+
+    if (isBoilerplateLine(line.text, repeatCount, totalPages)) {
+      flushBody();
+      sentences.push({ text: line.text, page: line.page, type: "boilerplate" });
+      return;
+    }
+
+    const heading = isHeadingLine(line, bodySize);
+
+    if (line.page === 1 && phase === "before-title") {
+      if (heading) {
+        flushBody();
+        sentences.push({ text: line.text, page: line.page, type: "title" });
+        phase = "front-matter";
+      } else {
+        bodyBuffer.push(line);
+      }
+      return;
+    }
+
+    if (line.page === 1 && phase === "front-matter") {
+      if (heading) {
+        flushBody();
+        sentences.push({ text: line.text, page: line.page, type: "heading" });
+        phase = "done";
+      } else if (line.text.split(/\s+/).length <= 20) {
+        flushBody();
+        sentences.push({ text: line.text, page: line.page, type: "author" });
+      } else {
+        phase = "done";
+        bodyBuffer.push(line);
+      }
+      return;
+    }
+
+    if (heading) {
+      flushBody();
+      sentences.push({ text: line.text, page: line.page, type: "heading" });
+    } else {
+      bodyBuffer.push(line);
+    }
+  });
+
+  flushBody();
+  return sentences;
+}
+
 async function extractPdf(file) {
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-  const sentences = [];
+  const allLines = [];
 
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
-    const pageText = content.items.map(item => item.str).join(" ").replace(/\s+/g, " ").trim();
-    const pageSentences = splitSentences(pageText);
-    pageSentences.forEach((s, i) => {
-      sentences.push({ text: s, page: pageNum, firstOnPage: i === 0 });
-    });
+    allLines.push(...groupItemsIntoLines(content.items, pageNum));
 
     const pct = Math.round((pageNum / pdf.numPages) * 100);
     els["upload-progress-fill"].style.width = pct + "%";
   }
+
+  const bodySize = computeBodyFontSize(allLines);
+  const sentences = buildSentences(allLines, bodySize, pdf.numPages);
 
   return { sentences, totalPages: pdf.numPages };
 }
@@ -248,12 +457,16 @@ function renderReadingPane(doc) {
       lastPage = s.page;
     }
     const span = document.createElement("span");
-    span.className = "sentence";
+    span.className = `sentence type-${s.type || "body"}`;
     span.id = `sent-${i}`;
     span.textContent = s.text + " ";
     span.addEventListener("click", () => jumpToSentence(i));
     pane.appendChild(span);
   });
+}
+
+function updateSkipVisualState() {
+  els["reading-pane"].classList.toggle("skip-extras-active", els["skip-extras"].checked);
 }
 
 function highlightSentence(i) {
@@ -322,11 +535,19 @@ function speakSentence(i) {
     return;
   }
 
-  const raw = doc.sentences[i].text;
-  const spoken = els["skip-parens"].checked ? stripParensForSpeech(raw) : raw;
+  const sentence = doc.sentences[i];
+  const skipExtras = els["skip-extras"].checked;
+  const skipTypes = skipExtras && (sentence.type === "title" || sentence.type === "author" || sentence.type === "boilerplate");
+
+  let spoken = "";
+  if (!skipTypes) {
+    const raw = sentence.text;
+    spoken = els["skip-parens"].checked ? stripCitationsAndAsides(raw) : raw;
+    if (sentence.type === "heading" && spoken) spoken = `Heading: ${spoken}`;
+  }
 
   if (!spoken) {
-    // Nothing left to say (e.g. a sentence that was entirely parenthetical) — move on.
+    // Nothing left to say (skipped type, or a sentence that was entirely parenthetical) — move on.
     state.idx = i;
     highlightSentence(i);
     scrollToSentence(i);
@@ -440,21 +661,69 @@ els["skip-parens"].addEventListener("change", () => {
   if (state.isPlaying) speakFrom(state.idx);
 });
 
+els["skip-extras"].addEventListener("change", () => {
+  localStorage.setItem("ra-skip-extras", els["skip-extras"].checked ? "1" : "0");
+  updateSkipVisualState();
+  if (state.isPlaying) speakFrom(state.idx);
+});
+
+// Scores voices so natural-sounding ones (Enhanced/Premium/Neural/network voices)
+// are suggested first, and novelty/legacy compact voices (Zarvox, Bells, etc.)
+// sort last. The Web Speech API can't add new voices — better ones usually have
+// to be installed at the OS level — but we can default to the best one available.
+const HIGH_QUALITY_HINTS = /enhanced|premium|neural|natural|hd|wavenet/i;
+const NOVELTY_VOICE_NAMES = new Set([
+  "Albert", "Bad News", "Bahh", "Bells", "Boing", "Bubbles", "Cellos", "Fred",
+  "Good News", "Jester", "Junior", "Kathy", "Organ", "Ralph", "Superstar",
+  "Trinoids", "Whisper", "Wobble", "Zarvox",
+]);
+
+function voiceScore(v) {
+  let score = 0;
+  if (HIGH_QUALITY_HINTS.test(v.name)) score += 100;
+  if (/google/i.test(v.name)) score += 40;
+  if (NOVELTY_VOICE_NAMES.has(v.name.split(" (")[0].trim())) score -= 100;
+  if (v.localService === false) score += 10;
+  if (v.default) score += 5;
+  return score;
+}
+
 function populateVoices() {
   state.voices = speechSynthesis.getVoices();
   const select = els["voice-select"];
   const savedVoice = localStorage.getItem("ra-voice");
   select.innerHTML = "";
-  state.voices
-    .filter(v => v.lang.startsWith("en") || state.voices.every(vv => !vv.lang.startsWith("en")))
-    .forEach(v => {
+
+  const englishVoices = state.voices.filter(v => v.lang.startsWith("en"));
+  const pool = englishVoices.length ? englishVoices : state.voices;
+  const scored = pool
+    .map(v => ({ v, score: voiceScore(v) }))
+    .sort((a, b) => b.score - a.score || a.v.name.localeCompare(b.v.name));
+
+  const recommended = scored.filter(s => s.score >= 0);
+  const other = scored.filter(s => s.score < 0);
+
+  function addGroup(label, list) {
+    if (!list.length) return;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    list.forEach(({ v }) => {
       const opt = document.createElement("option");
       opt.value = v.voiceURI;
       opt.textContent = `${v.name} (${v.lang})`;
-      select.appendChild(opt);
+      group.appendChild(opt);
     });
+    select.appendChild(group);
+  }
+
+  addGroup("Recommended", recommended);
+  addGroup("Other voices", other);
+
   if (savedVoice && [...select.options].some(o => o.value === savedVoice)) {
     select.value = savedVoice;
+  } else if (recommended.length) {
+    select.value = recommended[0].v.voiceURI;
+    localStorage.setItem("ra-voice", select.value);
   }
 }
 
@@ -500,6 +769,9 @@ async function init() {
     els["pitch-value"].textContent = parseFloat(savedPitch).toFixed(1);
   }
   els["skip-parens"].checked = localStorage.getItem("ra-skip-parens") === "1";
+  const savedSkipExtras = localStorage.getItem("ra-skip-extras");
+  els["skip-extras"].checked = savedSkipExtras === null ? true : savedSkipExtras === "1";
+  updateSkipVisualState();
 
   populateVoices();
 

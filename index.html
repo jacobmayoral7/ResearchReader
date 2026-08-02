@@ -68,14 +68,20 @@
           Pitch <span id="pitch-value">1.0</span>
           <input type="range" id="pitch-slider" min="0" max="2" step="0.1" value="1" />
         </label>
-        <label class="slider-label voice-label">
-          Voice
+        <label class="slider-label voice-label" title="Tip: for more natural, less robotic speech, install an Enhanced/Premium/Neural system voice in your OS's accessibility settings, then reload this page.">
+          Voice ⓘ
           <select id="voice-select"></select>
         </label>
-        <label class="slider-label toggle-label" title="Don't read text inside parentheses aloud, e.g. statistics like (r = .05, d = .2)">
+        <label class="slider-label toggle-label" title="Don't read text inside parentheses or [bracketed] citations aloud, e.g. (Smith et al., 2020) or stats like (r = .05, d = .2)">
           <span class="toggle-row">
             <input type="checkbox" id="skip-parens" />
-            Skip (parentheses)
+            Skip citations &amp; (parentheses)
+          </span>
+        </label>
+        <label class="slider-label toggle-label" title="Skip the title/author block on page 1, and running headers/footers, copyright lines, DOIs, and journal/volume info anywhere in the document">
+          <span class="toggle-row">
+            <input type="checkbox" id="skip-extras" />
+            Skip title, authors &amp; boilerplate
           </span>
         </label>
       </div>
