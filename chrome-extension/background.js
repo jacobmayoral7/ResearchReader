@@ -246,21 +246,21 @@ function startInPageReader(payload) {
         return true;
       }
 
-      let candidates = Array.prototype.filter.call(
+      // Semantic tags AND leaf-like <div>/<span> blocks are both included
+      // (not "div as a last resort") — many sites (academic publishers
+      // especially) wrap real body paragraphs in styled divs while still
+      // having plenty of unrelated <p> tags elsewhere (legal text, hidden
+      // accessibility banners), so "zero <p> found" is the wrong trigger.
+      const semantic = Array.prototype.filter.call(
         document.querySelectorAll("p, li, blockquote, dd, td, figcaption"),
         isCandidate
       );
-
-      // Some sites don't use semantic tags at all — their "paragraphs" are
-      // styled <div>/<span> elements. Fall back to leaf-like blocks (no
-      // nested block-level children) with enough of their OWN direct text.
-      if (candidates.length === 0) {
-        candidates = Array.prototype.filter.call(document.querySelectorAll("div, span"), function (el) {
-          if (!isCandidate(el)) return false;
-          if (el.querySelector("div, p, section, article, ul, ol, table, blockquote")) return false;
-          return true;
-        });
-      }
+      const leafBlocks = Array.prototype.filter.call(document.querySelectorAll("div, span"), function (el) {
+        if (!isCandidate(el)) return false;
+        if (el.querySelector("div, p, section, article, ul, ol, table, blockquote")) return false;
+        return true;
+      });
+      const candidates = semantic.concat(leafBlocks);
 
       if (candidates.length === 0) {
         alert(
@@ -269,10 +269,33 @@ function startInPageReader(payload) {
         return;
       }
 
+      // Click/hover detection uses real geometry (getClientRects — the
+      // actual per-line boxes), not native event targeting or a plain
+      // bounding box. Some sites style their paragraph container as
+      // `display: inline`; for an inline element wrapping across multiple
+      // lines, the bounding box includes gaps between lines that aren't
+      // actually part of the element for hit-testing, so a click there
+      // natively lands on the parent instead — this is what made clicking
+      // silently do nothing on pages like MDPI's article layout.
+      // A few px of padding absorbs the small inter-line leading gap so a
+      // click that lands just between two lines of the same paragraph still
+      // registers, without being loose enough to false-match a neighbor.
+      const HIT_PAD = 3;
+      function candidateAtPoint(x, y) {
+        for (let i = 0; i < candidates.length; i++) {
+          const el = candidates[i];
+          const rects = el.getClientRects();
+          for (let j = 0; j < rects.length; j++) {
+            const r = rects[j];
+            if (x >= r.left - HIT_PAD && x <= r.right + HIT_PAD && y >= r.top - HIT_PAD && y <= r.bottom + HIT_PAD) return el;
+          }
+        }
+        return null;
+      }
+
       const style = document.createElement("style");
       style.textContent =
-        ".__read_aloud_pickable__ { cursor: pointer !important; }" +
-        ".__read_aloud_pickable__:hover { background-color: rgba(168,73,42,0.12) !important;" +
+        ".__read_aloud_hover__ { background-color: rgba(168,73,42,0.12) !important;" +
         " outline: 2px dashed rgba(168,73,42,0.55) !important; outline-offset: 2px; }" +
         ".__read_aloud_selected__ { background-color: rgba(168,73,42,0.18) !important;" +
         " outline: 2px solid #a8492a !important; outline-offset: 2px; }" +
@@ -285,6 +308,7 @@ function startInPageReader(payload) {
       document.head.appendChild(style);
 
       const order = []; // { el, badge }, in click order
+      let hovered = null;
 
       function updateBar() {
         countLabel.textContent = order.length === 1 ? "1 selected" : order.length + " selected";
@@ -318,16 +342,38 @@ function startInPageReader(payload) {
         }
       }
 
-      function onClick(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        toggle(e.currentTarget);
+      // Coalesced to one check per animation frame instead of on every
+      // mousemove — scanning several hundred candidates' getClientRects()
+      // on every single mousemove event would be needlessly heavy.
+      let pendingPoint = null;
+      let rafScheduled = false;
+      function onMouseMove(e) {
+        pendingPoint = { x: e.clientX, y: e.clientY };
+        if (rafScheduled) return;
+        rafScheduled = true;
+        requestAnimationFrame(function () {
+          rafScheduled = false;
+          if (!pendingPoint) return;
+          const hit = candidateAtPoint(pendingPoint.x, pendingPoint.y);
+          if (hit !== hovered) {
+            if (hovered) hovered.classList.remove("__read_aloud_hover__");
+            if (hit) hit.classList.add("__read_aloud_hover__");
+            hovered = hit;
+          }
+          document.body.style.cursor = hit ? "pointer" : "";
+        });
       }
 
-      candidates.forEach(function (el) {
-        el.classList.add("__read_aloud_pickable__");
-        el.addEventListener("click", onClick, true);
-      });
+      function onClick(e) {
+        const hit = candidateAtPoint(e.clientX, e.clientY);
+        if (!hit) return; // not on a candidate — let the click behave normally
+        e.preventDefault();
+        e.stopPropagation();
+        toggle(hit);
+      }
+
+      document.addEventListener("mousemove", onMouseMove, true);
+      document.addEventListener("click", onClick, true);
 
       const ov = makeOverlay();
       const host = ov.host;
@@ -347,15 +393,13 @@ function startInPageReader(payload) {
       const playBtn = shadow.getElementById("play");
 
       function cleanup() {
-        candidates.forEach(function (el) {
-          el.removeEventListener("click", onClick, true);
-        });
+        document.removeEventListener("mousemove", onMouseMove, true);
+        document.removeEventListener("click", onClick, true);
+        document.body.style.cursor = "";
+        if (hovered) hovered.classList.remove("__read_aloud_hover__");
         order.forEach(function (item) {
           item.badge.remove();
           item.el.classList.remove("__read_aloud_selected__");
-        });
-        candidates.forEach(function (el) {
-          el.classList.remove("__read_aloud_pickable__");
         });
         style.remove();
         host.remove();
