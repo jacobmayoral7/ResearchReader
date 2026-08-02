@@ -161,20 +161,31 @@ function groupItemsIntoLines(items, pageNum) {
   const lines = [];
   let current = null;
   let lastY = null;
+  let lastEndX = null;
   const Y_TOL = 2;
 
   items.forEach(item => {
     const str = item.str;
     if (!str || !str.trim()) {
-      if (item.hasEOL && current) { lines.push(current); current = null; lastY = null; }
+      // A whitespace-only item is an explicit space between words.
+      if (current && str) current.text += " ";
+      if (item.hasEOL && current) { lines.push(current); current = null; lastY = null; lastEndX = null; }
       return;
     }
+    const x = item.transform[4];
     const y = item.transform[5];
     const fontSize = Math.hypot(item.transform[2], item.transform[3]) || item.height || 0;
     const bold = /bold/i.test(item.fontName || "");
+    const endX = x + (item.width || 0);
 
     if (current && lastY !== null && Math.abs(y - lastY) <= Y_TOL) {
-      current.text += (current.text.endsWith(" ") ? "" : " ") + str;
+      // Some PDFs emit each glyph/word as a separate, tightly-kerned item with no
+      // whitespace item between them (e.g. small-caps headers). Only insert a space
+      // when there's an actual visible gap, so "J OINT P OSITION" doesn't happen.
+      const gap = lastEndX === null ? 0 : x - lastEndX;
+      const needsSpace = gap > fontSize * 0.15;
+      const alreadyHasSpace = current.text.endsWith(" ") || str.startsWith(" ");
+      current.text += (needsSpace && !alreadyHasSpace ? " " : "") + str;
       current.fontSize = Math.max(current.fontSize, fontSize);
       current.bold = current.bold || bold;
     } else {
@@ -182,10 +193,12 @@ function groupItemsIntoLines(items, pageNum) {
       current = { text: str, page: pageNum, fontSize, bold };
     }
     lastY = y;
+    lastEndX = endX;
     if (item.hasEOL) {
       lines.push(current);
       current = null;
       lastY = null;
+      lastEndX = null;
     }
   });
   if (current) lines.push(current);
