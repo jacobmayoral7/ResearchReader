@@ -63,6 +63,9 @@ html, body {
   align-items: center;
   justify-content: space-between;
   padding: 14px 20px;
+  padding-top: max(14px, env(safe-area-inset-top));
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   gap: 12px;
@@ -172,6 +175,9 @@ html, body {
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 16px;
   padding: 20px;
+  padding-bottom: max(20px, env(safe-area-inset-bottom));
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
   align-content: start;
 }
 
@@ -326,6 +332,9 @@ html, body {
   background: var(--surface);
   border-top: 1px solid var(--border);
   padding: 14px 20px 18px;
+  padding-bottom: max(18px, env(safe-area-inset-bottom));
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
   gap: 12px;
