@@ -2,6 +2,13 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
+// Enables "Add to Home Screen" installability and offline use.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(err => console.error("SW registration failed:", err));
+  });
+}
+
 const DB_NAME = "read-aloud-db";
 const DB_VERSION = 1;
 const STORE = "documents";
