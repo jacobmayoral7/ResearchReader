@@ -240,14 +240,34 @@ function startInPageReader(payload) {
 
     // ---- Paragraph picker: click paragraphs to queue them, in click order ----
     function startParagraphPicker() {
-      const candidates = Array.prototype.filter.call(
-        document.querySelectorAll("p, li, blockquote"),
-        function (el) {
-          if ((el.innerText || "").trim().length <= 15) return false;
-          if (el.closest(CLUTTER_SELECTORS)) return false;
-          return true;
-        }
+      function isCandidate(el) {
+        if ((el.innerText || "").trim().length <= 15) return false;
+        if (el.closest(CLUTTER_SELECTORS)) return false;
+        return true;
+      }
+
+      let candidates = Array.prototype.filter.call(
+        document.querySelectorAll("p, li, blockquote, dd, td, figcaption"),
+        isCandidate
       );
+
+      // Some sites don't use semantic tags at all — their "paragraphs" are
+      // styled <div>/<span> elements. Fall back to leaf-like blocks (no
+      // nested block-level children) with enough of their OWN direct text.
+      if (candidates.length === 0) {
+        candidates = Array.prototype.filter.call(document.querySelectorAll("div, span"), function (el) {
+          if (!isCandidate(el)) return false;
+          if (el.querySelector("div, p, section, article, ul, ol, table, blockquote")) return false;
+          return true;
+        });
+      }
+
+      if (candidates.length === 0) {
+        alert(
+          "Read Aloud: couldn't find any paragraphs to pick on this page. Try \"Read this page aloud\" instead, or select some text and use \"Read selected text.\""
+        );
+        return;
+      }
 
       const style = document.createElement("style");
       style.textContent =
