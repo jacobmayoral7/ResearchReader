@@ -37,6 +37,21 @@ Then open http://localhost:8000 in your browser. (Opening `index.html` directly 
    default branch and the `/ (root)` folder, then save.
 4. GitHub will publish it at `https://<your-username>.github.io/<repo-name>/`.
 
+## Installing it on your phone
+
+This is a Progressive Web App (PWA), so it can be installed as a home-screen app
+without an App Store:
+
+- **iPhone/iPad (Safari)**: open the site, tap the Share icon, then **Add to Home
+  Screen**.
+- **Android (Chrome)**: open the site, tap the ⋮ menu, then **Install app** (or
+  **Add to Home screen**).
+
+Once installed, it opens full-screen like a regular app and works offline — your
+uploaded PDFs, reading position, and settings are all stored on-device, and the app
+shell (plus the PDF-parsing library) is cached so you can even upload a new PDF
+without a connection.
+
 ## Notes / limits
 
 - Text-to-speech quality and available voices depend on your browser and OS (Chrome,
