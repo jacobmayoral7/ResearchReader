@@ -25,7 +25,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "read-selection") {
-    sendSelectionToApp(info.selectionText, tab);
+    readSelectionInPlace(tab.id, info.selectionText);
     return;
   }
   const url = info.linkUrl || info.pageUrl || tab?.url;
@@ -39,12 +39,221 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.action === "send-pdf" && message.url) {
     sendPdfToApp(message.url);
   } else if (message?.action === "read-page" && message.tabId) {
-    sendPageTextToApp(message.tabId);
-  } else if (message?.action === "read-selection" && message.text) {
-    sendSelectionToApp(message.text, { title: message.title });
+    readPageInPlace(message.tabId);
+  } else if (message?.action === "read-selection" && message.text && message.tabId) {
+    readSelectionInPlace(message.tabId, message.text);
   }
   return false;
 });
+
+// ---------- Read this page / read selection: happens right on the page ----------
+// No app tab, no messaging — a floating player is injected directly into the
+// page you're viewing, so you can follow along on the actual page.
+
+async function readPageInPlace(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: startInPageReader,
+      args: [{ mode: "auto" }],
+    });
+    flashBadge("✓", "#2e7d32");
+  } catch (err) {
+    console.error("Read Aloud extension: failed to read this page", err);
+    flashBadge("!", "#a8492a");
+  }
+}
+
+async function readSelectionInPlace(tabId, text) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: startInPageReader,
+      args: [{ mode: "text", text }],
+    });
+    flashBadge("✓", "#2e7d32");
+  } catch (err) {
+    console.error("Read Aloud extension: failed to read selection", err);
+    flashBadge("!", "#a8492a");
+  }
+}
+
+// Runs INSIDE the page being read (via chrome.scripting.executeScript), so it
+// must be fully self-contained — no references to anything outside this
+// function's own body (the function is serialized and re-run in the page,
+// closures don't survive that trip).
+function startInPageReader(payload) {
+  try {
+    let text = "";
+    if (payload && payload.mode === "text" && payload.text) {
+      text = payload.text;
+    } else {
+      // Strip common clutter containers (nav/header/footer/aside, tables of
+      // contents, edit links) from a CLONE before measuring/reading text, so
+      // things like a page's table-of-contents sidebar aren't read first.
+      const CLUTTER_SELECTORS =
+        "nav, header, footer, aside, [role='navigation'], [role='banner'], " +
+        "[role='contentinfo'], .toc, #toc, .vector-toc, .vector-page-toolbar, " +
+        ".navbox, .mw-editsection, script, style, noscript";
+      const cleanText = (el) => {
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll(CLUTTER_SELECTORS).forEach((n) => n.remove());
+        return (clone.innerText || "").trim();
+      };
+
+      let best = null;
+      let bestLen = 0;
+      document.querySelectorAll("article, main, [role='main']").forEach((el) => {
+        const len = cleanText(el).length;
+        if (len > bestLen) {
+          bestLen = len;
+          best = el;
+        }
+      });
+      if (!best || bestLen < 200) {
+        const bodyLen = cleanText(document.body).length;
+        document.querySelectorAll("div, section").forEach((el) => {
+          const len = cleanText(el).length;
+          if (len > bestLen && len < bodyLen * 0.95) {
+            bestLen = len;
+            best = el;
+          }
+        });
+      }
+      text = cleanText(best || document.body);
+    }
+    text = (text || "").trim();
+    if (!text || text.length < 20) {
+      alert("Read Aloud: couldn't find readable text here.");
+      return;
+    }
+
+    function splitSentences(t) {
+      const masked = t.replace(/(\d)\.(\d)/g, "$1$2");
+      const matches = masked.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g) || [];
+      return matches.map((s) => s.replace(//g, ".").trim()).filter(Boolean);
+    }
+    const sentences = splitSentences(text);
+    if (!sentences.length) {
+      alert("Read Aloud: couldn't find readable text here.");
+      return;
+    }
+
+    const prevHost = document.getElementById("__read_aloud_overlay_host__");
+    if (prevHost) {
+      window.speechSynthesis.cancel();
+      prevHost.remove();
+    }
+
+    const host = document.createElement("div");
+    host.id = "__read_aloud_overlay_host__";
+    document.documentElement.appendChild(host);
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `
+      <style>
+        .bar {
+          position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+          z-index: 2147483647; background: #201f25; color: #ece9e2;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+          border-radius: 14px; box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+          padding: 10px 14px; width: min(92vw, 480px); box-sizing: border-box;
+        }
+        .row { display: flex; align-items: center; gap: 8px; }
+        button {
+          background: #a8492a; color: #fff; border: none; border-radius: 8px;
+          padding: 6px 10px; cursor: pointer; font-size: 13px; font-family: inherit; line-height: 1;
+        }
+        button.secondary { background: #34323a; color: #ece9e2; }
+        input[type=range] { flex: 1; accent-color: #a8492a; }
+        .label { font-size: 11px; color: #9a958c; white-space: nowrap; }
+        .text {
+          font-size: 12.5px; color: #d8d3c9; margin-top: 8px; max-height: 4.2em;
+          overflow: hidden; line-height: 1.4;
+        }
+        .close { margin-left: auto; background: none; color: #9a958c; font-size: 15px; padding: 2px 6px; }
+      </style>
+      <div class="bar">
+        <div class="row">
+          <button id="playpause" title="Play/Pause">▶</button>
+          <button id="stop" class="secondary" title="Stop">⏹</button>
+          <span class="label">Speed</span>
+          <input id="rate" type="range" min="0.5" max="2.5" step="0.1" value="1" />
+          <span class="label" id="rate-label">1.0×</span>
+          <button id="close" class="close" title="Close">✕</button>
+        </div>
+        <div class="text" id="current-text"></div>
+      </div>
+    `;
+
+    const playBtn = shadow.getElementById("playpause");
+    const rateInput = shadow.getElementById("rate");
+    const rateLabel = shadow.getElementById("rate-label");
+    const textEl = shadow.getElementById("current-text");
+
+    let idx = 0;
+    let playing = false;
+
+    function speak(i) {
+      window.speechSynthesis.cancel();
+      if (i >= sentences.length) {
+        playing = false;
+        playBtn.textContent = "▶";
+        return;
+      }
+      idx = i;
+      textEl.textContent = sentences[i];
+      const u = new SpeechSynthesisUtterance(sentences[i]);
+      u.rate = parseFloat(rateInput.value);
+      u.onend = () => {
+        if (playing) speak(i + 1);
+      };
+      window.speechSynthesis.speak(u);
+    }
+
+    playBtn.addEventListener("click", () => {
+      if (playing) {
+        window.speechSynthesis.pause();
+        playing = false;
+        playBtn.textContent = "▶";
+      } else if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+        playing = true;
+        playBtn.textContent = "⏸";
+      } else {
+        playing = true;
+        playBtn.textContent = "⏸";
+        speak(idx);
+      }
+    });
+
+    shadow.getElementById("stop").addEventListener("click", () => {
+      window.speechSynthesis.cancel();
+      playing = false;
+      playBtn.textContent = "▶";
+      idx = 0;
+      textEl.textContent = "";
+    });
+
+    rateInput.addEventListener("input", () => {
+      rateLabel.textContent = parseFloat(rateInput.value).toFixed(1) + "×";
+      if (playing) speak(idx);
+    });
+
+    shadow.getElementById("close").addEventListener("click", () => {
+      window.speechSynthesis.cancel();
+      host.remove();
+    });
+
+    playing = true;
+    playBtn.textContent = "⏸";
+    speak(0);
+  } catch (err) {
+    console.error("Read Aloud in-page reader error:", err);
+    alert("Read Aloud couldn't read this page: " + err.message);
+  }
+}
+
+// ---------- Send PDF to app: still uses the full app (parsing, library, etc.) ----------
 
 async function sendPdfToApp(pdfUrl) {
   try {
@@ -54,8 +263,7 @@ async function sendPdfToApp(pdfUrl) {
     const buffer = await res.arrayBuffer();
     const name = decodeURIComponent((pdfUrl.split("/").pop() || "document.pdf").split("?")[0]);
 
-    const tab = await findOrOpenAppTab();
-    await sendMessageWithRetry(tab.id, { type: "incoming-pdf", name, buffer });
+    await deliverToApp({ type: "incoming-pdf", name, buffer });
     flashBadge("✓", "#2e7d32");
   } catch (err) {
     console.error("Read Aloud extension: failed to send PDF", err);
@@ -63,96 +271,39 @@ async function sendPdfToApp(pdfUrl) {
   }
 }
 
-async function sendPageTextToApp(sourceTabId) {
-  try {
-    flashBadge("…");
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId: sourceTabId },
-      func: extractPageText,
-    });
-    if (!result || !result.text || result.text.trim().length < 40) {
-      throw new Error("No readable text found on this page");
-    }
-
-    const appTab = await findOrOpenAppTab();
-    await sendMessageWithRetry(appTab.id, {
-      type: "incoming-page-text",
-      title: result.title || "Untitled Page",
-      text: result.text,
-    });
-    flashBadge("✓", "#2e7d32");
-  } catch (err) {
-    console.error("Read Aloud extension: failed to read page", err);
-    flashBadge("!", "#a8492a");
-  }
-}
-
-async function sendSelectionToApp(text, tab) {
-  try {
-    flashBadge("…");
-    if (!text || !text.trim()) throw new Error("No text selected");
-
-    const appTab = await findOrOpenAppTab();
-    await sendMessageWithRetry(appTab.id, {
-      type: "incoming-page-text",
-      title: tab?.title ? `Selection — ${tab.title}` : "Selected text",
-      text: text.trim(),
-    });
-    flashBadge("✓", "#2e7d32");
-  } catch (err) {
-    console.error("Read Aloud extension: failed to send selection", err);
-    flashBadge("!", "#a8492a");
-  }
-}
-
-// Runs inside the page being read (via chrome.scripting.executeScript), so it
-// can only reference the DOM — no access to anything else in this file.
-// Lightweight "reader mode": prefer <article>/<main>, else the largest text
-// block that isn't essentially the whole page (nav/sidebar/footer clutter).
-function extractPageText() {
-  function textLen(el) {
-    return (el.innerText || "").trim().length;
-  }
-  let best = null;
-  let bestLen = 0;
-  document.querySelectorAll("article, main, [role='main']").forEach((el) => {
-    const len = textLen(el);
-    if (len > bestLen) {
-      bestLen = len;
-      best = el;
-    }
-  });
-  if (!best || bestLen < 200) {
-    const bodyLen = textLen(document.body);
-    document.querySelectorAll("div, section").forEach((el) => {
-      const len = textLen(el);
-      if (len > bestLen && len < bodyLen * 0.95) {
-        bestLen = len;
-        best = el;
-      }
-    });
-  }
-  const text = (best || document.body).innerText || "";
-  return { title: document.title, text: text.trim() };
-}
-
-async function findOrOpenAppTab() {
+// Finds (or opens) the app tab and delivers a message to its content script.
+// If an existing tab doesn't respond (e.g. it was already open before the
+// extension was last reloaded, so it never got the content script), reloads
+// that tab and retries once instead of failing silently.
+async function deliverToApp(message) {
   const existing = await chrome.tabs.query({ url: APP_URL + "*" });
   if (existing[0]) {
     await chrome.tabs.update(existing[0].id, { active: true });
-    return existing[0];
+    try {
+      await sendMessageWithRetry(existing[0].id, message, 6, 200);
+      return;
+    } catch {
+      await chrome.tabs.reload(existing[0].id);
+      await waitForTabComplete(existing[0].id);
+      await sendMessageWithRetry(existing[0].id, message);
+      return;
+    }
   }
   const tab = await chrome.tabs.create({ url: APP_URL });
-  await new Promise((resolve) => {
+  await waitForTabComplete(tab.id);
+  await sendMessageWithRetry(tab.id, message);
+}
+
+function waitForTabComplete(tabId) {
+  return new Promise((resolve) => {
     function listener(id, info) {
-      if (id === tab.id && info.status === "complete") {
+      if (id === tabId && info.status === "complete") {
         chrome.tabs.onUpdated.removeListener(listener);
         resolve();
       }
     }
     chrome.tabs.onUpdated.addListener(listener);
   });
-  return tab;
 }
 
 // The content script's message listener may not be registered the instant

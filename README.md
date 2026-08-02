@@ -59,17 +59,20 @@ without a connection.
 
 `chrome-extension/` is a small Manifest V3 extension that adds a toolbar popup with:
 
-- **Read selected text** — only appears if you've actually selected some text on
-  the page; sends just that selection into the app. Also available by selecting
-  text, right-clicking, and choosing **Read selected text aloud** — that
-  right-click option only shows up when there's a selection, so it's there when
-  you want it and out of the way otherwise.
-- **Read this page aloud** — extracts the current tab's main readable text (a
-  lightweight reader-mode heuristic: `<article>`/`<main>`, falling back to the
-  largest text block on the page) and sends it into the app.
-- **Send PDF to app** — fetches the current tab's PDF and sends it into the app.
-  You can also right-click a PDF link (or right-click on an open PDF) for the same
-  option in the context menu.
+- **Read selected text** and **Read this page aloud** both read *right there on
+  the page* — a small floating player (play/pause, stop, speed) is injected
+  directly into the tab you're on, so you can keep following along on the actual
+  page instead of being sent anywhere else. "Read selected text" only appears
+  (in the popup, and as a right-click option) when you've actually selected some
+  text; otherwise it stays out of the way. Page extraction uses a lightweight
+  reader-mode heuristic (`<article>`/`<main>`, with nav/header/footer/sidebar
+  clutter stripped, falling back to the largest text block on the page) — it
+  works well on most articles but isn't a full Readability parser, so it can
+  occasionally pick up a stray banner or miss on unusual layouts.
+- **Send PDF to app** — fetches the current tab's PDF and sends it into the main
+  Read Aloud app (so it gets the full treatment: heading detection, library,
+  resume position). You can also right-click a PDF link (or right-click on an
+  open PDF) for the same option in the context menu.
 
 To install it (unpacked extensions can't be published without a Chrome Web Store
 listing, so this is a one-time manual step):

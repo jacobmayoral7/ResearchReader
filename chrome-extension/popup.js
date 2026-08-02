@@ -8,7 +8,7 @@ async function getActiveTab() {
 document.getElementById("read-page").addEventListener("click", async () => {
   const tab = await getActiveTab();
   if (!tab) return;
-  statusEl.textContent = "Sending page to Read Aloud…";
+  statusEl.textContent = "Reading this page…";
   // Fire-and-forget: the background service worker does the actual work so it
   // keeps running even after this popup closes.
   chrome.runtime.sendMessage({ action: "read-page", tabId: tab.id });
@@ -37,8 +37,8 @@ document.getElementById("send-pdf").addEventListener("click", async () => {
       const btn = document.getElementById("read-selection");
       btn.hidden = false;
       btn.addEventListener("click", () => {
-        statusEl.textContent = "Sending selection to Read Aloud…";
-        chrome.runtime.sendMessage({ action: "read-selection", text: result, title: tab.title });
+        statusEl.textContent = "Reading selection…";
+        chrome.runtime.sendMessage({ action: "read-selection", text: result, tabId: tab.id });
         setTimeout(() => window.close(), 400);
       });
     }
