@@ -16,6 +16,9 @@ A tiny personal website for reading PDFs (papers, book chapters, class readings)
 - Your documents and reading position are saved in the browser (IndexedDB), so you can
   close the tab and pick up where you left off.
 - Light/dark theme and adjustable text size.
+- Besides the file picker, you can paste a direct link to a PDF and it'll fetch and
+  parse it (works in any browser, including Safari) — subject to the source site
+  allowing cross-site downloads (CORS).
 
 ## Running it locally
 
@@ -51,6 +54,48 @@ Once installed, it opens full-screen like a regular app and works offline — yo
 uploaded PDFs, reading position, and settings are all stored on-device, and the app
 shell (plus the PDF-parsing library) is cached so you can even upload a new PDF
 without a connection.
+
+## Chrome extension
+
+`chrome-extension/` is a small Manifest V3 extension that adds a toolbar popup with:
+
+- **Read selected text** — only appears if you've actually selected some text on
+  the page; sends just that selection into the app. Also available by selecting
+  text, right-clicking, and choosing **Read selected text aloud** — that
+  right-click option only shows up when there's a selection, so it's there when
+  you want it and out of the way otherwise.
+- **Read this page aloud** — extracts the current tab's main readable text (a
+  lightweight reader-mode heuristic: `<article>`/`<main>`, falling back to the
+  largest text block on the page) and sends it into the app.
+- **Send PDF to app** — fetches the current tab's PDF and sends it into the app.
+  You can also right-click a PDF link (or right-click on an open PDF) for the same
+  option in the context menu.
+
+To install it (unpacked extensions can't be published without a Chrome Web Store
+listing, so this is a one-time manual step):
+
+1. Go to `chrome://extensions`.
+2. Turn on **Developer mode** (top-right).
+3. Click **Load unpacked** and select the `chrome-extension` folder.
+
+After pulling any update to this repo that touches the `chrome-extension/` folder,
+click the reload icon on the extension's card in `chrome://extensions` to pick up
+the change.
+
+There's no Safari equivalent here — Apple requires all Safari extensions, even for
+purely personal/local use, to be built and signed through Xcode with an Apple ID
+(and re-signed every 7 days without a paid Apple Developer account). The
+"paste a link" field in the app and drag-and-drop file upload cover the same need
+in Safari without that overhead.
+
+## Installing it on your computer
+
+Since this is a PWA, desktop Chrome/Edge and Safari (macOS Sonoma/Safari 17+) can
+install it as a real desktop app too, not just on phones:
+
+- **Chrome/Edge**: open the site, click the install icon in the address bar (or
+  menu → **Install Read Aloud…**).
+- **Safari (macOS)**: open the site, then **File → Add to Dock**.
 
 ## Notes / limits
 

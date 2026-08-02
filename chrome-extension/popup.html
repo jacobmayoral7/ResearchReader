@@ -36,6 +36,14 @@
     color: #fff;
     border-color: #a8492a;
   }
+  button.contextual {
+    border-color: #a8492a;
+    color: #a8492a;
+    font-weight: 600;
+  }
+  button[hidden] {
+    display: none;
+  }
   #status {
     font-size: 0.75rem;
     color: #756f66;
@@ -46,6 +54,7 @@
 </head>
 <body>
   <h1>📚 Read Aloud</h1>
+  <button id="read-selection" class="contextual" hidden>✂️ Read selected text</button>
   <button id="read-page" class="primary">📖 Read this page aloud</button>
   <button id="send-pdf">📤 Send PDF to app</button>
   <div id="status"></div>

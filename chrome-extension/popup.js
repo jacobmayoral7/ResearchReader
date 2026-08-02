@@ -22,3 +22,27 @@ document.getElementById("send-pdf").addEventListener("click", async () => {
   chrome.runtime.sendMessage({ action: "send-pdf", url: tab.url });
   setTimeout(() => window.close(), 400);
 });
+
+// Only show "Read selected text" if the page actually has a selection right
+// now — an occasional option, not a permanent fixture of the popup.
+(async () => {
+  const tab = await getActiveTab();
+  if (!tab) return;
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => window.getSelection()?.toString() || "",
+    });
+    if (result && result.trim()) {
+      const btn = document.getElementById("read-selection");
+      btn.hidden = false;
+      btn.addEventListener("click", () => {
+        statusEl.textContent = "Sending selection to Read Aloud…";
+        chrome.runtime.sendMessage({ action: "read-selection", text: result, title: tab.title });
+        setTimeout(() => window.close(), 400);
+      });
+    }
+  } catch {
+    // Some pages (chrome://, the Chrome Web Store, etc.) block script injection — ignore.
+  }
+})();

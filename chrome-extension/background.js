@@ -14,21 +14,34 @@ chrome.runtime.onInstalled.addListener(() => {
     contexts: ["page"],
     documentUrlPatterns: PDF_PATTERNS,
   });
+  // Only ever appears when text is actually selected — an occasional option,
+  // not something always in the menu.
+  chrome.contextMenus.create({
+    id: "read-selection",
+    title: "Read selected text aloud",
+    contexts: ["selection"],
+  });
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === "read-selection") {
+    sendSelectionToApp(info.selectionText, tab);
+    return;
+  }
   const url = info.linkUrl || info.pageUrl || tab?.url;
   if (url) sendPdfToApp(url);
 });
 
-// The toolbar icon opens popup.html (two explicit choices: read this page, or
-// send a PDF), so there's no chrome.action.onClicked handler here — Chrome
-// doesn't fire that event once a default_popup is set.
+// The toolbar icon opens popup.html (explicit choices: read this page, read a
+// selection, or send a PDF), so there's no chrome.action.onClicked handler
+// here — Chrome doesn't fire that event once a default_popup is set.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.action === "send-pdf" && message.url) {
     sendPdfToApp(message.url);
   } else if (message?.action === "read-page" && message.tabId) {
     sendPageTextToApp(message.tabId);
+  } else if (message?.action === "read-selection" && message.text) {
+    sendSelectionToApp(message.text, { title: message.title });
   }
   return false;
 });
@@ -70,6 +83,24 @@ async function sendPageTextToApp(sourceTabId) {
     flashBadge("✓", "#2e7d32");
   } catch (err) {
     console.error("Read Aloud extension: failed to read page", err);
+    flashBadge("!", "#a8492a");
+  }
+}
+
+async function sendSelectionToApp(text, tab) {
+  try {
+    flashBadge("…");
+    if (!text || !text.trim()) throw new Error("No text selected");
+
+    const appTab = await findOrOpenAppTab();
+    await sendMessageWithRetry(appTab.id, {
+      type: "incoming-page-text",
+      title: tab?.title ? `Selection — ${tab.title}` : "Selected text",
+      text: text.trim(),
+    });
+    flashBadge("✓", "#2e7d32");
+  } catch (err) {
+    console.error("Read Aloud extension: failed to send selection", err);
     flashBadge("!", "#a8492a");
   }
 }
