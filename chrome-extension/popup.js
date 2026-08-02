@@ -15,6 +15,14 @@ document.getElementById("read-page").addEventListener("click", async () => {
   setTimeout(() => window.close(), 400);
 });
 
+document.getElementById("pick-paragraphs").addEventListener("click", async () => {
+  const tab = await getActiveTab();
+  if (!tab) return;
+  statusEl.textContent = "Click paragraphs on the page, then hit Play there…";
+  chrome.runtime.sendMessage({ action: "pick-paragraphs", tabId: tab.id });
+  setTimeout(() => window.close(), 600);
+});
+
 document.getElementById("send-pdf").addEventListener("click", async () => {
   const tab = await getActiveTab();
   if (!tab?.url) return;

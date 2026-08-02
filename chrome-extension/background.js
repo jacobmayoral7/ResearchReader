@@ -33,8 +33,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 // The toolbar icon opens popup.html (explicit choices: read this page, read a
-// selection, or send a PDF), so there's no chrome.action.onClicked handler
-// here — Chrome doesn't fire that event once a default_popup is set.
+// selection, pick paragraphs, or send a PDF), so there's no
+// chrome.action.onClicked handler here — Chrome doesn't fire that event once
+// a default_popup is set.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.action === "send-pdf" && message.url) {
     sendPdfToApp(message.url);
@@ -42,13 +43,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     readPageInPlace(message.tabId);
   } else if (message?.action === "read-selection" && message.text && message.tabId) {
     readSelectionInPlace(message.tabId, message.text);
+  } else if (message?.action === "pick-paragraphs" && message.tabId) {
+    pickParagraphsInPlace(message.tabId);
   }
   return false;
 });
 
-// ---------- Read this page / read selection: happens right on the page ----------
-// No app tab, no messaging — a floating player is injected directly into the
-// page you're viewing, so you can follow along on the actual page.
+// ---------- Read this page / read selection / pick paragraphs: all happen
+// right on the page. No app tab, no messaging — a floating player (or picker)
+// is injected directly into the page you're viewing.
 
 async function readPageInPlace(tabId) {
   try {
@@ -78,32 +81,314 @@ async function readSelectionInPlace(tabId, text) {
   }
 }
 
+async function pickParagraphsInPlace(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: startInPageReader,
+      args: [{ mode: "pick" }],
+    });
+    flashBadge("✓", "#2e7d32");
+  } catch (err) {
+    console.error("Read Aloud extension: failed to start paragraph picker", err);
+    flashBadge("!", "#a8492a");
+  }
+}
+
 // Runs INSIDE the page being read (via chrome.scripting.executeScript), so it
 // must be fully self-contained — no references to anything outside this
 // function's own body (the function is serialized and re-run in the page,
 // closures don't survive that trip).
 function startInPageReader(payload) {
   try {
+    // Clear any previous overlay/picker state so repeat invocations don't
+    // stack listeners or leave stale UI behind.
+    const prevHost = document.getElementById("__read_aloud_overlay_host__");
+    if (prevHost) {
+      window.speechSynthesis.cancel();
+      prevHost.remove();
+    }
+    if (window.__readAloudPickerCleanup__) {
+      window.__readAloudPickerCleanup__();
+      window.__readAloudPickerCleanup__ = null;
+    }
+
+    // Shared clutter exclusion: nav/header/footer/aside, tables of contents,
+    // edit links — used both to keep these out of "read this page" and to
+    // keep TOC/menu list items out of the paragraph picker's candidates.
+    var CLUTTER_SELECTORS =
+      "nav, header, footer, aside, [role='navigation'], [role='banner'], " +
+      "[role='contentinfo'], .toc, #toc, .vector-toc, .vector-page-toolbar, " +
+      ".navbox, .mw-editsection, script, style, noscript";
+
+    var DOT_PLACEHOLDER = String.fromCharCode(1);
+    function splitSentences(t) {
+      const masked = t.replace(/(\d)\.(\d)/g, "$1" + DOT_PLACEHOLDER + "$2");
+      const matches = masked.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g) || [];
+      return matches
+        .map((s) => s.split(DOT_PLACEHOLDER).join(".").trim())
+        .filter(Boolean);
+    }
+
+    const BAR_STYLE =
+      ".bar { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);" +
+      " z-index: 2147483647; background: #201f25; color: #ece9e2;" +
+      " font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;" +
+      " border-radius: 14px; box-shadow: 0 8px 30px rgba(0,0,0,0.4);" +
+      " padding: 10px 14px; width: min(92vw, 480px); box-sizing: border-box; }" +
+      ".row { display: flex; align-items: center; gap: 8px; }" +
+      "button { background: #a8492a; color: #fff; border: none; border-radius: 8px;" +
+      " padding: 6px 10px; cursor: pointer; font-size: 13px; font-family: inherit; line-height: 1; }" +
+      "button:disabled { opacity: 0.4; cursor: default; }" +
+      "button.secondary { background: #34323a; color: #ece9e2; }" +
+      "input[type=range] { flex: 1; accent-color: #a8492a; }" +
+      ".label { font-size: 11px; color: #9a958c; white-space: nowrap; }" +
+      ".hint { font-size: 11.5px; color: #9a958c; margin-top: 8px; line-height: 1.4; }" +
+      ".text { font-size: 12.5px; color: #d8d3c9; margin-top: 8px; max-height: 4.2em;" +
+      " overflow: hidden; line-height: 1.4; }" +
+      ".close { margin-left: auto; background: none; color: #9a958c; font-size: 15px; padding: 2px 6px; }";
+
+    function makeOverlay() {
+      const host = document.createElement("div");
+      host.id = "__read_aloud_overlay_host__";
+      document.documentElement.appendChild(host);
+      return { host: host, shadow: host.attachShadow({ mode: "open" }) };
+    }
+
+    // ---- Reading UI: play/pause/stop/speed over a fixed list of sentences ----
+    function startReadingSentences(sentences) {
+      const ov = makeOverlay();
+      const host = ov.host;
+      const shadow = ov.shadow;
+      shadow.innerHTML =
+        "<style>" + BAR_STYLE + "</style>" +
+        '<div class="bar">' +
+        '<div class="row">' +
+        '<button id="playpause" title="Play/Pause">▶</button>' +
+        '<button id="stop" class="secondary" title="Stop">⏹</button>' +
+        '<span class="label">Speed</span>' +
+        '<input id="rate" type="range" min="0.5" max="2.5" step="0.1" value="1" />' +
+        '<span class="label" id="rate-label">1.0×</span>' +
+        '<button id="close" class="close" title="Close">✕</button>' +
+        "</div>" +
+        '<div class="text" id="current-text"></div>' +
+        "</div>";
+
+      const playBtn = shadow.getElementById("playpause");
+      const rateInput = shadow.getElementById("rate");
+      const rateLabel = shadow.getElementById("rate-label");
+      const textEl = shadow.getElementById("current-text");
+
+      let idx = 0;
+      let playing = false;
+
+      function speak(i) {
+        window.speechSynthesis.cancel();
+        if (i >= sentences.length) {
+          playing = false;
+          playBtn.textContent = "▶";
+          return;
+        }
+        idx = i;
+        textEl.textContent = sentences[i];
+        const u = new SpeechSynthesisUtterance(sentences[i]);
+        u.rate = parseFloat(rateInput.value);
+        u.onend = function () {
+          if (playing) speak(i + 1);
+        };
+        window.speechSynthesis.speak(u);
+      }
+
+      playBtn.addEventListener("click", function () {
+        if (playing) {
+          window.speechSynthesis.pause();
+          playing = false;
+          playBtn.textContent = "▶";
+        } else if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+          playing = true;
+          playBtn.textContent = "⏸";
+        } else {
+          playing = true;
+          playBtn.textContent = "⏸";
+          speak(idx);
+        }
+      });
+
+      shadow.getElementById("stop").addEventListener("click", function () {
+        window.speechSynthesis.cancel();
+        playing = false;
+        playBtn.textContent = "▶";
+        idx = 0;
+        textEl.textContent = "";
+      });
+
+      rateInput.addEventListener("input", function () {
+        rateLabel.textContent = parseFloat(rateInput.value).toFixed(1) + "×";
+        if (playing) speak(idx);
+      });
+
+      shadow.getElementById("close").addEventListener("click", function () {
+        window.speechSynthesis.cancel();
+        host.remove();
+      });
+
+      playing = true;
+      playBtn.textContent = "⏸";
+      speak(0);
+    }
+
+    // ---- Paragraph picker: click paragraphs to queue them, in click order ----
+    function startParagraphPicker() {
+      const candidates = Array.prototype.filter.call(
+        document.querySelectorAll("p, li, blockquote"),
+        function (el) {
+          if ((el.innerText || "").trim().length <= 15) return false;
+          if (el.closest(CLUTTER_SELECTORS)) return false;
+          return true;
+        }
+      );
+
+      const style = document.createElement("style");
+      style.textContent =
+        ".__read_aloud_pickable__ { cursor: pointer !important; }" +
+        ".__read_aloud_pickable__:hover { background-color: rgba(168,73,42,0.12) !important;" +
+        " outline: 2px dashed rgba(168,73,42,0.55) !important; outline-offset: 2px; }" +
+        ".__read_aloud_selected__ { background-color: rgba(168,73,42,0.18) !important;" +
+        " outline: 2px solid #a8492a !important; outline-offset: 2px; }" +
+        ".__read_aloud_badge__ { display: inline-flex !important; align-items: center !important;" +
+        " justify-content: center !important; min-width: 20px !important; height: 20px !important;" +
+        " padding: 0 5px !important; margin-right: 6px !important; background: #a8492a !important;" +
+        " color: #fff !important; border-radius: 999px !important; font-size: 12px !important;" +
+        " font-family: sans-serif !important; font-weight: 700 !important; vertical-align: middle !important;" +
+        " line-height: 20px !important;";
+      document.head.appendChild(style);
+
+      const order = []; // { el, badge }, in click order
+
+      function updateBar() {
+        countLabel.textContent = order.length === 1 ? "1 selected" : order.length + " selected";
+        playBtn.disabled = order.length === 0;
+      }
+
+      function renumber() {
+        order.forEach(function (item, i) {
+          item.badge.textContent = String(i + 1);
+        });
+        updateBar();
+      }
+
+      function toggle(el) {
+        const idx = order.findIndex(function (item) {
+          return item.el === el;
+        });
+        if (idx >= 0) {
+          order[idx].badge.remove();
+          el.classList.remove("__read_aloud_selected__");
+          order.splice(idx, 1);
+          renumber();
+        } else {
+          const badge = document.createElement("span");
+          badge.className = "__read_aloud_badge__";
+          badge.textContent = String(order.length + 1);
+          el.classList.add("__read_aloud_selected__");
+          el.insertBefore(badge, el.firstChild);
+          order.push({ el: el, badge: badge });
+          updateBar();
+        }
+      }
+
+      function onClick(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggle(e.currentTarget);
+      }
+
+      candidates.forEach(function (el) {
+        el.classList.add("__read_aloud_pickable__");
+        el.addEventListener("click", onClick, true);
+      });
+
+      const ov = makeOverlay();
+      const host = ov.host;
+      const shadow = ov.shadow;
+      shadow.innerHTML =
+        "<style>" + BAR_STYLE + "</style>" +
+        '<div class="bar">' +
+        '<div class="row">' +
+        '<span class="label" id="count-label">0 selected</span>' +
+        '<button id="play" disabled>▶ Play</button>' +
+        '<button id="cancel" class="secondary">✕ Cancel</button>' +
+        "</div>" +
+        '<div class="hint">Click paragraphs to queue them, in the order you click. Click one again to remove it.</div>' +
+        "</div>";
+
+      const countLabel = shadow.getElementById("count-label");
+      const playBtn = shadow.getElementById("play");
+
+      function cleanup() {
+        candidates.forEach(function (el) {
+          el.removeEventListener("click", onClick, true);
+        });
+        order.forEach(function (item) {
+          item.badge.remove();
+          item.el.classList.remove("__read_aloud_selected__");
+        });
+        candidates.forEach(function (el) {
+          el.classList.remove("__read_aloud_pickable__");
+        });
+        style.remove();
+        host.remove();
+      }
+      window.__readAloudPickerCleanup__ = cleanup;
+
+      playBtn.addEventListener("click", function () {
+        // Read from a clone with the number badge stripped out, so the badge
+        // text ("1", "2", ...) doesn't leak into the extracted paragraph text.
+        const texts = order
+          .map(function (item) {
+            const clone = item.el.cloneNode(true);
+            const badge = clone.querySelector(".__read_aloud_badge__");
+            if (badge) badge.remove();
+            return (clone.innerText || "").trim();
+          })
+          .filter(Boolean);
+        cleanup();
+        window.__readAloudPickerCleanup__ = null;
+        const sentences = splitSentences(texts.join("\n\n"));
+        if (sentences.length) startReadingSentences(sentences);
+      });
+
+      shadow.getElementById("cancel").addEventListener("click", function () {
+        cleanup();
+        window.__readAloudPickerCleanup__ = null;
+      });
+    }
+
+    // ---- Dispatch ----
+    if (payload && payload.mode === "pick") {
+      startParagraphPicker();
+      return;
+    }
+
     let text = "";
     if (payload && payload.mode === "text" && payload.text) {
       text = payload.text;
     } else {
-      // Strip common clutter containers (nav/header/footer/aside, tables of
-      // contents, edit links) from a CLONE before measuring/reading text, so
-      // things like a page's table-of-contents sidebar aren't read first.
-      const CLUTTER_SELECTORS =
-        "nav, header, footer, aside, [role='navigation'], [role='banner'], " +
-        "[role='contentinfo'], .toc, #toc, .vector-toc, .vector-page-toolbar, " +
-        ".navbox, .mw-editsection, script, style, noscript";
-      const cleanText = (el) => {
+      // Strip common clutter containers from a CLONE before measuring/reading
+      // text, so things like a page's table-of-contents sidebar aren't read
+      // first (CLUTTER_SELECTORS is shared with the paragraph picker above).
+      const cleanText = function (el) {
         const clone = el.cloneNode(true);
-        clone.querySelectorAll(CLUTTER_SELECTORS).forEach((n) => n.remove());
+        clone.querySelectorAll(CLUTTER_SELECTORS).forEach(function (n) {
+          n.remove();
+        });
         return (clone.innerText || "").trim();
       };
 
       let best = null;
       let bestLen = 0;
-      document.querySelectorAll("article, main, [role='main']").forEach((el) => {
+      document.querySelectorAll("article, main, [role='main']").forEach(function (el) {
         const len = cleanText(el).length;
         if (len > bestLen) {
           bestLen = len;
@@ -112,7 +397,7 @@ function startInPageReader(payload) {
       });
       if (!best || bestLen < 200) {
         const bodyLen = cleanText(document.body).length;
-        document.querySelectorAll("div, section").forEach((el) => {
+        document.querySelectorAll("div, section").forEach(function (el) {
           const len = cleanText(el).length;
           if (len > bestLen && len < bodyLen * 0.95) {
             bestLen = len;
@@ -127,126 +412,12 @@ function startInPageReader(payload) {
       alert("Read Aloud: couldn't find readable text here.");
       return;
     }
-
-    function splitSentences(t) {
-      const masked = t.replace(/(\d)\.(\d)/g, "$1$2");
-      const matches = masked.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g) || [];
-      return matches.map((s) => s.replace(//g, ".").trim()).filter(Boolean);
-    }
     const sentences = splitSentences(text);
     if (!sentences.length) {
       alert("Read Aloud: couldn't find readable text here.");
       return;
     }
-
-    const prevHost = document.getElementById("__read_aloud_overlay_host__");
-    if (prevHost) {
-      window.speechSynthesis.cancel();
-      prevHost.remove();
-    }
-
-    const host = document.createElement("div");
-    host.id = "__read_aloud_overlay_host__";
-    document.documentElement.appendChild(host);
-    const shadow = host.attachShadow({ mode: "open" });
-    shadow.innerHTML = `
-      <style>
-        .bar {
-          position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
-          z-index: 2147483647; background: #201f25; color: #ece9e2;
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-          border-radius: 14px; box-shadow: 0 8px 30px rgba(0,0,0,0.4);
-          padding: 10px 14px; width: min(92vw, 480px); box-sizing: border-box;
-        }
-        .row { display: flex; align-items: center; gap: 8px; }
-        button {
-          background: #a8492a; color: #fff; border: none; border-radius: 8px;
-          padding: 6px 10px; cursor: pointer; font-size: 13px; font-family: inherit; line-height: 1;
-        }
-        button.secondary { background: #34323a; color: #ece9e2; }
-        input[type=range] { flex: 1; accent-color: #a8492a; }
-        .label { font-size: 11px; color: #9a958c; white-space: nowrap; }
-        .text {
-          font-size: 12.5px; color: #d8d3c9; margin-top: 8px; max-height: 4.2em;
-          overflow: hidden; line-height: 1.4;
-        }
-        .close { margin-left: auto; background: none; color: #9a958c; font-size: 15px; padding: 2px 6px; }
-      </style>
-      <div class="bar">
-        <div class="row">
-          <button id="playpause" title="Play/Pause">▶</button>
-          <button id="stop" class="secondary" title="Stop">⏹</button>
-          <span class="label">Speed</span>
-          <input id="rate" type="range" min="0.5" max="2.5" step="0.1" value="1" />
-          <span class="label" id="rate-label">1.0×</span>
-          <button id="close" class="close" title="Close">✕</button>
-        </div>
-        <div class="text" id="current-text"></div>
-      </div>
-    `;
-
-    const playBtn = shadow.getElementById("playpause");
-    const rateInput = shadow.getElementById("rate");
-    const rateLabel = shadow.getElementById("rate-label");
-    const textEl = shadow.getElementById("current-text");
-
-    let idx = 0;
-    let playing = false;
-
-    function speak(i) {
-      window.speechSynthesis.cancel();
-      if (i >= sentences.length) {
-        playing = false;
-        playBtn.textContent = "▶";
-        return;
-      }
-      idx = i;
-      textEl.textContent = sentences[i];
-      const u = new SpeechSynthesisUtterance(sentences[i]);
-      u.rate = parseFloat(rateInput.value);
-      u.onend = () => {
-        if (playing) speak(i + 1);
-      };
-      window.speechSynthesis.speak(u);
-    }
-
-    playBtn.addEventListener("click", () => {
-      if (playing) {
-        window.speechSynthesis.pause();
-        playing = false;
-        playBtn.textContent = "▶";
-      } else if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
-        playing = true;
-        playBtn.textContent = "⏸";
-      } else {
-        playing = true;
-        playBtn.textContent = "⏸";
-        speak(idx);
-      }
-    });
-
-    shadow.getElementById("stop").addEventListener("click", () => {
-      window.speechSynthesis.cancel();
-      playing = false;
-      playBtn.textContent = "▶";
-      idx = 0;
-      textEl.textContent = "";
-    });
-
-    rateInput.addEventListener("input", () => {
-      rateLabel.textContent = parseFloat(rateInput.value).toFixed(1) + "×";
-      if (playing) speak(idx);
-    });
-
-    shadow.getElementById("close").addEventListener("click", () => {
-      window.speechSynthesis.cancel();
-      host.remove();
-    });
-
-    playing = true;
-    playBtn.textContent = "⏸";
-    speak(0);
+    startReadingSentences(sentences);
   } catch (err) {
     console.error("Read Aloud in-page reader error:", err);
     alert("Read Aloud couldn't read this page: " + err.message);

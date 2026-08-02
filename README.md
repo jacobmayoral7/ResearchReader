@@ -59,16 +59,24 @@ without a connection.
 
 `chrome-extension/` is a small Manifest V3 extension that adds a toolbar popup with:
 
-- **Read selected text** and **Read this page aloud** both read *right there on
-  the page* — a small floating player (play/pause, stop, speed) is injected
-  directly into the tab you're on, so you can keep following along on the actual
-  page instead of being sent anywhere else. "Read selected text" only appears
-  (in the popup, and as a right-click option) when you've actually selected some
-  text; otherwise it stays out of the way. Page extraction uses a lightweight
-  reader-mode heuristic (`<article>`/`<main>`, with nav/header/footer/sidebar
-  clutter stripped, falling back to the largest text block on the page) — it
-  works well on most articles but isn't a full Readability parser, so it can
-  occasionally pick up a stray banner or miss on unusual layouts.
+- **Read selected text**, **Read this page aloud**, and **Pick paragraphs to
+  read** all read *right there on the page* — a small floating player
+  (play/pause, stop, speed) is injected directly into the tab you're on, so you
+  can keep following along on the actual page instead of being sent anywhere
+  else. "Read selected text" only appears (in the popup, and as a right-click
+  option) when you've actually selected some text; otherwise it stays out of
+  the way.
+- **Pick paragraphs to read** turns on a picking mode: hover highlights
+  clickable paragraphs, clicking one adds it to a numbered reading queue (click
+  again to remove it), and the queue reads back in the order you clicked —
+  paragraphs don't have to be in the page's original order. Hit the floating
+  **Play** button once you've picked what you want.
+- Whole-page extraction uses a lightweight reader-mode heuristic
+  (`<article>`/`<main>`, with nav/header/footer/sidebar/TOC clutter stripped,
+  falling back to the largest text block on the page) — it works well on most
+  articles but isn't a full Readability parser, so it can occasionally pick up
+  a stray banner or miss on unusual layouts. The paragraph picker uses the same
+  clutter filtering to keep menu/TOC items out of its candidate list.
 - **Send PDF to app** — fetches the current tab's PDF and sends it into the main
   Read Aloud app (so it gets the full treatment: heading detection, library,
   resume position). You can also right-click a PDF link (or right-click on an
