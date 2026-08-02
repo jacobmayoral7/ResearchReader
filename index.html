@@ -29,6 +29,12 @@
       </div>
     </header>
 
+    <form id="url-form" class="url-form">
+      <input type="url" id="url-input" placeholder="…or paste a link to a PDF" inputmode="url" />
+      <button type="submit" class="btn">Fetch</button>
+    </form>
+    <div id="url-status" class="url-status"></div>
+
     <div id="upload-progress" class="upload-progress hidden">
       <div class="upload-progress-label">Parsing PDF…</div>
       <div class="progress-bar"><div id="upload-progress-fill" class="progress-fill"></div></div>

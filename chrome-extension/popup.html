@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    width: 240px;
+    padding: 12px;
+    margin: 0;
+    background: #f7f5f1;
+    color: #1f1d1a;
+  }
+  h1 {
+    font-size: 0.95rem;
+    margin: 0 0 10px;
+  }
+  button {
+    display: block;
+    width: 100%;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border-radius: 8px;
+    border: 1px solid #e5e0d8;
+    background: #fff;
+    color: #1f1d1a;
+    cursor: pointer;
+    font-size: 0.85rem;
+    text-align: left;
+  }
+  button:hover {
+    filter: brightness(0.97);
+  }
+  button.primary {
+    background: #a8492a;
+    color: #fff;
+    border-color: #a8492a;
+  }
+  #status {
+    font-size: 0.75rem;
+    color: #756f66;
+    min-height: 1em;
+    margin-top: 2px;
+  }
+</style>
+</head>
+<body>
+  <h1>📚 Read Aloud</h1>
+  <button id="read-page" class="primary">📖 Read this page aloud</button>
+  <button id="send-pdf">📤 Send PDF to app</button>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

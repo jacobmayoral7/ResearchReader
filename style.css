@@ -141,6 +141,35 @@ html, body {
   color: var(--muted);
 }
 
+.url-form {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.url-form input[type="url"] {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.url-status {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.url-status:not(:empty) {
+  padding: 8px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
 .upload-progress {
   padding: 12px 20px;
   background: var(--surface);

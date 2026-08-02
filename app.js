@@ -73,6 +73,7 @@ const els = {};
   "play-btn", "stop-btn", "prev-btn", "next-btn", "rate-slider", "rate-value",
   "pitch-slider", "pitch-value", "voice-select", "theme-toggle", "theme-toggle-2",
   "font-inc", "font-dec", "skip-parens", "skip-extras",
+  "url-form", "url-input", "url-status",
 ].forEach(id => { els[id] = document.getElementById(id); });
 
 // ---------- Theme ----------
@@ -369,34 +370,103 @@ async function extractPdf(file) {
 }
 
 // ---------- Upload flow ----------
-els["file-input"].addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  e.target.value = "";
+async function saveAndOpenDoc(title, sentences, totalPages) {
+  const doc = {
+    id: crypto.randomUUID(),
+    title: title || "Untitled",
+    addedAt: Date.now(),
+    lastOpenedAt: Date.now(),
+    sentences,
+    totalPages,
+    position: 0,
+  };
+  await dbPut(doc);
+  state.docs.push(doc);
+  renderLibrary();
+  openReader(doc.id);
+}
 
+// Shared by the file picker, the "paste a link" fetcher, and incoming PDFs
+// handed off from the Chrome extension.
+async function ingestFile(file, titleHint) {
   els["upload-progress"].classList.remove("hidden");
   els["upload-progress-fill"].style.width = "0%";
 
   try {
     const { sentences, totalPages } = await extractPdf(file);
-    const doc = {
-      id: crypto.randomUUID(),
-      title: file.name.replace(/\.pdf$/i, ""),
-      addedAt: Date.now(),
-      lastOpenedAt: Date.now(),
-      sentences,
-      totalPages,
-      position: 0,
-    };
-    await dbPut(doc);
-    state.docs.push(doc);
-    renderLibrary();
-    openReader(doc.id);
+    await saveAndOpenDoc((titleHint || file.name).replace(/\.pdf$/i, ""), sentences, totalPages);
+    return true;
   } catch (err) {
     console.error(err);
     alert("Couldn't read that PDF. It may be scanned/image-only (no selectable text) or corrupted.");
+    return false;
   } finally {
     els["upload-progress"].classList.add("hidden");
+  }
+}
+
+// A page of plain web text (from the Chrome extension's "Read this page
+// aloud" button) has no font-size data, so it's just one flat "body" flow —
+// no heading/title/boilerplate detection, unlike PDFs.
+async function ingestPlainText(title, text) {
+  const sentences = splitSentences(text).map(s => ({ text: s, page: 1, type: "body" }));
+  if (!sentences.length) {
+    alert("Couldn't find readable text on that page.");
+    return false;
+  }
+  await saveAndOpenDoc(title, sentences, 1);
+  return true;
+}
+
+els["file-input"].addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = "";
+  ingestFile(file);
+});
+
+// ---------- Paste a PDF link (works in any browser, e.g. Safari) ----------
+function titleFromUrl(url) {
+  try {
+    const last = decodeURIComponent(new URL(url).pathname.split("/").filter(Boolean).pop() || "");
+    return last.replace(/\.pdf$/i, "") || "Untitled PDF";
+  } catch {
+    return "Untitled PDF";
+  }
+}
+
+els["url-form"].addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const url = els["url-input"].value.trim();
+  if (!url) return;
+
+  els["url-status"].textContent = "Fetching…";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const file = new File([blob], titleFromUrl(url) + ".pdf", { type: "application/pdf" });
+    els["url-status"].textContent = "";
+    const ok = await ingestFile(file, titleFromUrl(url));
+    if (ok) els["url-input"].value = "";
+  } catch (err) {
+    console.error(err);
+    els["url-status"].textContent =
+      "Couldn't fetch that link directly (the site may block cross-site downloads). Try downloading the PDF, then use Upload PDF instead.";
+  }
+});
+
+// ---------- Incoming content from the Read Aloud Chrome extension ----------
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+  const data = event.data;
+  if (!data || data.source !== "read-aloud-extension") return;
+
+  if (data.type === "incoming-pdf") {
+    const file = new File([data.buffer], data.name || "Untitled.pdf", { type: "application/pdf" });
+    ingestFile(file);
+  } else if (data.type === "incoming-page-text") {
+    ingestPlainText(data.title, data.text);
   }
 });
 
