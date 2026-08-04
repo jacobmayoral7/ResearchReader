@@ -16,9 +16,19 @@ A tiny personal website for reading PDFs (papers, book chapters, class readings)
 - Your documents and reading position are saved in the browser (IndexedDB), so you can
   close the tab and pick up where you left off.
 - Light/dark theme and adjustable text size.
-- Besides the file picker, you can paste a direct link to a PDF and it'll fetch and
-  parse it (works in any browser, including Safari) — subject to the source site
-  allowing cross-site downloads (CORS).
+- Besides the file picker, you can paste a direct link to a PDF **or a regular
+  webpage** and it'll fetch and read it (works in any browser, including
+  Safari). For a webpage, it extracts the main article text using the same
+  reader-mode heuristic as the Chrome extension (`<article>`/`<main>`, with
+  nav/header/footer/sidebar clutter stripped). This only works if the source
+  site allows cross-site fetching (CORS) — and in practice **most websites
+  don't**, even ones that are otherwise fully public (Wikipedia and arXiv's own
+  abstract pages both block it, for example) — CORS is normally only enabled
+  for APIs meant to be consumed by other sites, not for regular browsable
+  pages. It also can't see content a page builds with client-side JavaScript
+  after load (React/Vue-style apps), since only the initial HTML is fetched.
+  When a link doesn't work, downloading/saving the page and using Upload PDF
+  (or copy-pasting the text) is the reliable fallback.
 
 ## Running it locally
 

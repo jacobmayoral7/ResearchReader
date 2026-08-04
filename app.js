@@ -425,14 +425,58 @@ els["file-input"].addEventListener("change", async (e) => {
   ingestFile(file);
 });
 
-// ---------- Paste a PDF link (works in any browser, e.g. Safari) ----------
+// ---------- Paste a link to a PDF or webpage (works in any browser, e.g. Safari) ----------
 function titleFromUrl(url) {
   try {
     const last = decodeURIComponent(new URL(url).pathname.split("/").filter(Boolean).pop() || "");
-    return last.replace(/\.pdf$/i, "") || "Untitled PDF";
+    return last.replace(/\.pdf$/i, "") || "Untitled";
   } catch {
-    return "Untitled PDF";
+    return "Untitled";
   }
+}
+
+// Same clutter-exclusion list used by the Chrome extension's "read this page"
+// mode. Kept in sync manually since this runs in a different context (a
+// detached, unrendered document parsed from fetched HTML, not a live tab).
+const HTML_CLUTTER_SELECTORS =
+  "nav, header, footer, aside, [role='navigation'], [role='banner'], " +
+  "[role='contentinfo'], .toc, #toc, .vector-toc, .vector-page-toolbar, " +
+  ".navbox, .mw-editsection, script, style, noscript, template, svg";
+
+// Extracts readable article text from a fetched HTML string. The document is
+// parsed but never attached/rendered, so innerText (which depends on layout)
+// isn't usable here — textContent is used instead, with a space inserted
+// after each block-level element so words from adjacent tags don't run
+// together. This can't see content that a page renders via client-side JS
+// after load (React/Vue-style single-page apps) since we only have the raw
+// HTML the server returned.
+function extractReadableTextFromHTML(html) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const BLOCK_TAGS = "p, div, section, article, li, h1, h2, h3, h4, h5, h6, blockquote, tr, td, br";
+
+  function cleanText(el) {
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll(HTML_CLUTTER_SELECTORS).forEach(n => n.remove());
+    clone.querySelectorAll(BLOCK_TAGS).forEach(n => n.appendChild(doc.createTextNode(" ")));
+    return (clone.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  let best = null;
+  let bestLen = 0;
+  doc.querySelectorAll("article, main, [role='main']").forEach(el => {
+    const len = cleanText(el).length;
+    if (len > bestLen) { bestLen = len; best = el; }
+  });
+  if (!best || bestLen < 200) {
+    const bodyLen = cleanText(doc.body).length;
+    doc.querySelectorAll("div, section").forEach(el => {
+      const len = cleanText(el).length;
+      if (len > bestLen && len < bodyLen * 0.95) { bestLen = len; best = el; }
+    });
+  }
+
+  const title = (doc.querySelector("title")?.textContent || "").trim();
+  return { title, text: cleanText(best || doc.body) };
 }
 
 els["url-form"].addEventListener("submit", async (e) => {
@@ -444,15 +488,26 @@ els["url-form"].addEventListener("submit", async (e) => {
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    const file = new File([blob], titleFromUrl(url) + ".pdf", { type: "application/pdf" });
+    const contentType = res.headers.get("content-type") || "";
+    const looksLikePdf = contentType.includes("pdf") || /\.pdf(?:[?#]|$)/i.test(url);
+
+    let ok;
+    if (looksLikePdf) {
+      const blob = await res.blob();
+      const file = new File([blob], titleFromUrl(url) + ".pdf", { type: "application/pdf" });
+      ok = await ingestFile(file, titleFromUrl(url));
+    } else {
+      const html = await res.text();
+      const { title, text } = extractReadableTextFromHTML(html);
+      ok = await ingestPlainText(title || titleFromUrl(url), text);
+    }
     els["url-status"].textContent = "";
-    const ok = await ingestFile(file, titleFromUrl(url));
     if (ok) els["url-input"].value = "";
   } catch (err) {
     console.error(err);
     els["url-status"].textContent =
-      "Couldn't fetch that link directly (the site may block cross-site downloads). Try downloading the PDF, then use Upload PDF instead.";
+      "Couldn't fetch that link directly (the site may block cross-site requests, or it needs you to be logged in). " +
+      "Try downloading/saving the content, then use Upload PDF instead.";
   }
 });
 
