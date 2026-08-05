@@ -77,6 +77,19 @@ html, body {
   margin: 0;
 }
 
+.library-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.library-heading h1 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .reader-title {
   margin: 0;
   font-size: 1rem;
@@ -197,6 +210,61 @@ html, body {
   transition: width 0.2s ease;
 }
 
+.folders-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 16px 20px 0;
+}
+
+.folders-bar:empty {
+  display: none;
+}
+
+.folder-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  font-size: 0.85rem;
+  position: relative;
+}
+
+.folder-card:hover {
+  filter: brightness(1.05);
+}
+
+.folder-card .folder-count {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.folder-card .folder-delete-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.folder-card .folder-delete-btn:hover {
+  color: var(--text);
+}
+
+.folder-card.new-folder-card {
+  border-style: dashed;
+  color: var(--muted);
+  background: transparent;
+  box-shadow: none;
+}
+
 .doc-grid {
   flex: 1;
   overflow-y: auto;
@@ -268,6 +336,16 @@ html, body {
 .doc-card .delete-btn:hover {
   background: var(--border);
   color: var(--text);
+}
+
+.doc-card .folder-select {
+  font-size: 0.75rem;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  max-width: 100%;
 }
 
 /* Reader */

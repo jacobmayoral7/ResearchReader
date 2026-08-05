@@ -10,8 +10,9 @@ if ("serviceWorker" in navigator) {
 }
 
 const DB_NAME = "read-aloud-db";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE = "documents";
+const FOLDER_STORE = "folders";
 
 let db = null;
 
@@ -22,6 +23,9 @@ function openDB() {
       const database = req.result;
       if (!database.objectStoreNames.contains(STORE)) {
         database.createObjectStore(STORE, { keyPath: "id" });
+      }
+      if (!database.objectStoreNames.contains(FOLDER_STORE)) {
+        database.createObjectStore(FOLDER_STORE, { keyPath: "id" });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -56,9 +60,38 @@ function dbDelete(id) {
   });
 }
 
+function dbPutFolder(folder) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FOLDER_STORE, "readwrite");
+    tx.objectStore(FOLDER_STORE).put(folder);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function dbGetAllFolders() {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FOLDER_STORE, "readonly");
+    const req = tx.objectStore(FOLDER_STORE).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function dbDeleteFolder(id) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FOLDER_STORE, "readwrite");
+    tx.objectStore(FOLDER_STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 // ---------- State ----------
 const state = {
   docs: [],
+  folders: [],
+  currentFolderId: null, // null = viewing the top-level library
   currentDoc: null,
   idx: 0,
   isPlaying: false,
@@ -74,6 +107,7 @@ const els = {};
   "pitch-slider", "pitch-value", "voice-select", "theme-toggle", "theme-toggle-2",
   "font-inc", "font-dec", "skip-parens", "skip-extras",
   "url-form", "url-input", "url-status",
+  "folders-bar", "folder-back-btn", "library-title",
 ].forEach(id => { els[id] = document.getElementById(id); });
 
 // ---------- Theme ----------
@@ -370,6 +404,8 @@ async function extractPdf(file) {
 }
 
 // ---------- Upload flow ----------
+// New documents land in whichever folder you're currently browsing (or
+// ungrouped, at the top level), so uploading while inside a folder just works.
 async function saveAndOpenDoc(title, sentences, totalPages) {
   const doc = {
     id: crypto.randomUUID(),
@@ -379,6 +415,7 @@ async function saveAndOpenDoc(title, sentences, totalPages) {
     sentences,
     totalPages,
     position: 0,
+    folderId: state.currentFolderId,
   };
   await dbPut(doc);
   state.docs.push(doc);
@@ -525,11 +562,137 @@ window.addEventListener("message", (event) => {
   }
 });
 
+// ---------- Folders ----------
+async function createFolder(name) {
+  const folder = { id: crypto.randomUUID(), name, createdAt: Date.now() };
+  await dbPutFolder(folder);
+  state.folders.push(folder);
+  return folder;
+}
+
+function openFolder(id) {
+  state.currentFolderId = id;
+  renderLibrary();
+}
+
+function closeFolder() {
+  state.currentFolderId = null;
+  renderLibrary();
+}
+
+els["folder-back-btn"].addEventListener("click", closeFolder);
+
 // ---------- Library rendering ----------
+function renderFoldersBar() {
+  const bar = els["folders-bar"];
+  bar.innerHTML = "";
+  // Folders are only browsable one level deep, so the bar (and the option to
+  // create a new one) only shows at the top level, not while inside a folder.
+  if (state.currentFolderId !== null) return;
+
+  state.folders
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .forEach(folder => {
+      const count = state.docs.filter(d => d.folderId === folder.id).length;
+      const card = document.createElement("div");
+      card.className = "folder-card";
+      card.innerHTML = `📁 <span class="folder-name"></span> <span class="folder-count">${count}</span> <button class="folder-delete-btn" title="Delete folder">✕</button>`;
+      card.querySelector(".folder-name").textContent = folder.name;
+      card.addEventListener("click", () => openFolder(folder.id));
+      card.querySelector(".folder-delete-btn").addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        if (confirm(`Delete folder "${folder.name}"? Documents inside will stay, just ungrouped.`)) {
+          await dbDeleteFolder(folder.id);
+          state.folders = state.folders.filter(f => f.id !== folder.id);
+          const affected = state.docs.filter(d => d.folderId === folder.id);
+          for (const d of affected) {
+            d.folderId = null;
+            await dbPut(d);
+          }
+          renderLibrary();
+        }
+      });
+      bar.appendChild(card);
+    });
+
+  const newCard = document.createElement("div");
+  newCard.className = "folder-card new-folder-card";
+  newCard.textContent = "+ New folder";
+  newCard.addEventListener("click", async () => {
+    const name = prompt("Folder name:");
+    if (name && name.trim()) await createFolder(name.trim());
+    renderLibrary();
+  });
+  bar.appendChild(newCard);
+}
+
+function buildFolderSelect(doc) {
+  const select = document.createElement("select");
+  select.className = "folder-select";
+  select.title = "Move to folder";
+
+  const noneOpt = document.createElement("option");
+  noneOpt.value = "";
+  noneOpt.textContent = "No folder";
+  select.appendChild(noneOpt);
+
+  state.folders
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .forEach(folder => {
+      const opt = document.createElement("option");
+      opt.value = folder.id;
+      opt.textContent = folder.name;
+      select.appendChild(opt);
+    });
+
+  const newOpt = document.createElement("option");
+  newOpt.value = "__new__";
+  newOpt.textContent = "+ New folder…";
+  select.appendChild(newOpt);
+
+  select.value = doc.folderId || "";
+
+  select.addEventListener("click", (ev) => ev.stopPropagation());
+  select.addEventListener("change", async (ev) => {
+    ev.stopPropagation();
+    let targetId = select.value;
+    if (targetId === "__new__") {
+      const name = prompt("Folder name:");
+      if (!name || !name.trim()) {
+        select.value = doc.folderId || "";
+        return;
+      }
+      const folder = await createFolder(name.trim());
+      targetId = folder.id;
+    }
+    doc.folderId = targetId || null;
+    await dbPut(doc);
+    renderLibrary();
+  });
+
+  return select;
+}
+
 function renderLibrary() {
   const grid = els["doc-grid"];
   grid.innerHTML = "";
-  const sorted = [...state.docs].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+
+  const inFolder = state.currentFolderId !== null;
+  els["folder-back-btn"].classList.toggle("hidden", !inFolder);
+  if (inFolder) {
+    const folder = state.folders.find(f => f.id === state.currentFolderId);
+    els["library-title"].textContent = folder ? `📁 ${folder.name}` : "📚 Read Aloud";
+    if (!folder) state.currentFolderId = null; // folder was deleted elsewhere; fall back
+  } else {
+    els["library-title"].textContent = "📚 Read Aloud";
+  }
+
+  renderFoldersBar();
+
+  const visibleDocs = state.docs.filter(d => (d.folderId || null) === state.currentFolderId);
+  const sorted = visibleDocs.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
 
   els["empty-state"].classList.toggle("hidden", sorted.length > 0);
 
@@ -544,6 +707,7 @@ function renderLibrary() {
       <div class="card-progress-bar"><div class="card-progress-fill" style="width:${pct}%"></div></div>
     `;
     card.querySelector("h3").textContent = doc.title;
+    card.appendChild(buildFolderSelect(doc));
     card.addEventListener("click", () => openReader(doc.id));
     card.querySelector(".delete-btn").addEventListener("click", async (ev) => {
       ev.stopPropagation();
@@ -922,6 +1086,7 @@ async function init() {
 
   db = await openDB();
   state.docs = await dbGetAll();
+  state.folders = await dbGetAllFolders();
   renderLibrary();
 }
 

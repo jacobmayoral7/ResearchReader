@@ -29,6 +29,11 @@ A tiny personal website for reading PDFs (papers, book chapters, class readings)
   after load (React/Vue-style apps), since only the initial HTML is fetched.
   When a link doesn't work, downloading/saving the page and using Upload PDF
   (or copy-pasting the text) is the reliable fallback.
+- Documents can be grouped into folders (e.g. one per class) — each doc card has
+  a "move to folder" dropdown, and folders show up as pill-shaped cards at the
+  top of the library. Uploading or pasting a link while a folder is open drops
+  the new document straight into that folder. Deleting a folder only ungroups
+  its documents; it never deletes them.
 
 ## Running it locally
 

@@ -21,7 +21,10 @@
   <!-- LIBRARY VIEW -->
   <section id="library-view" class="view">
     <header class="topbar">
-      <h1>📚 Read Aloud</h1>
+      <div class="library-heading">
+        <button id="folder-back-btn" class="icon-btn hidden" title="Back to library">←</button>
+        <h1 id="library-title">📚 Read Aloud</h1>
+      </div>
       <div class="topbar-actions">
         <button id="theme-toggle" class="icon-btn" title="Toggle dark/light">🌙</button>
         <label class="btn primary" for="file-input">+ Upload PDF</label>
@@ -39,6 +42,8 @@
       <div class="upload-progress-label">Parsing PDF…</div>
       <div class="progress-bar"><div id="upload-progress-fill" class="progress-fill"></div></div>
     </div>
+
+    <div id="folders-bar" class="folders-bar"></div>
 
     <div id="empty-state" class="empty-state">
       <p>No documents yet.</p>
