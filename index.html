@@ -70,6 +70,15 @@
       <div class="progress-bar"><div id="reader-progress-fill" class="progress-fill"></div></div>
     </div>
 
+    <div id="chapter-bar" class="chapter-bar hidden">
+      <button id="chapter-prev" class="icon-btn" title="Previous chapter">⏪</button>
+      <select id="chapter-select" title="Jump to chapter"></select>
+      <button id="chapter-next" class="icon-btn" title="Next chapter">⏩</button>
+      <label class="chapter-only-label" title="Stop at the end of each chapter instead of continuing into the next">
+        <input type="checkbox" id="chapter-only" /> One chapter at a time
+      </label>
+    </div>
+
     <div id="reading-pane" class="reading-pane" tabindex="0"></div>
 
     <footer class="controls">
@@ -99,10 +108,10 @@
             Skip citations &amp; (parentheses)
           </span>
         </label>
-        <label class="slider-label toggle-label" title="Skip the title/author block on page 1, and running headers/footers, copyright lines, DOIs, and journal/volume info anywhere in the document">
+        <label class="slider-label toggle-label" title="Skip the title/author block on page 1, figure/table captions and chart text, and running headers/footers, copyright lines, DOIs, and journal/volume info">
           <span class="toggle-row">
             <input type="checkbox" id="skip-extras" />
-            Skip title, authors &amp; boilerplate
+            Skip title, authors, captions &amp; boilerplate
           </span>
         </label>
       </div>

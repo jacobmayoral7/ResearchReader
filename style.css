@@ -350,6 +350,38 @@ html, body {
 
 /* Reader */
 
+.chapter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.chapter-bar select {
+  flex: 1;
+  min-width: 140px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.chapter-only-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 .reader-progress {
   padding: 8px 20px;
   background: var(--surface);
@@ -409,7 +441,8 @@ html, body {
   font-size: 0.85em;
 }
 
-.reading-pane .type-boilerplate {
+.reading-pane .type-boilerplate,
+.reading-pane .type-caption {
   display: block;
   color: var(--muted);
   font-size: 0.75em;
@@ -417,7 +450,8 @@ html, body {
 
 .reading-pane.skip-extras-active .type-title,
 .reading-pane.skip-extras-active .type-author,
-.reading-pane.skip-extras-active .type-boilerplate {
+.reading-pane.skip-extras-active .type-boilerplate,
+.reading-pane.skip-extras-active .type-caption {
   opacity: 0.4;
   text-decoration: line-through;
   text-decoration-color: var(--muted);

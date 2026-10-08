@@ -29,6 +29,17 @@ A tiny personal website for reading PDFs (papers, book chapters, class readings)
   after load (React/Vue-style apps), since only the initial HTML is fetched.
   When a link doesn't work, downloading/saving the page and using Upload PDF
   (or copy-pasting the text) is the reliable fallback.
+- Detects **chapters**: it uses the PDF's own bookmarks (table of contents) when it
+  has them, falling back to "Chapter N"-style headings, and finally to plain section
+  headings. A chapter bar in the reader lets you jump to any chapter or step
+  previous/next, and an optional **One chapter at a time** mode stops playback at
+  the end of each chapter (parked at the start of the next, ready to resume).
+- Skips **figure/table captions and the text inside charts** (axis labels, tick
+  numbers) along with the title/author block and boilerplate — same toggle,
+  on by default. Body text that merely *mentions* a figure ("Figure 3 shows…") is
+  still read; only real captions ("Figure 3. …") are skipped. Documents uploaded
+  before this was added need to be re-uploaded to get chapter detection and caption
+  skipping.
 - Documents can be grouped into folders (e.g. one per class) — each doc card has
   a "move to folder" dropdown, and folders show up as pill-shaped cards at the
   top of the library. Uploading or pasting a link while a folder is open drops

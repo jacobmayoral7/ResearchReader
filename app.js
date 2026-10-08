@@ -92,6 +92,7 @@ const state = {
   docs: [],
   folders: [],
   currentFolderId: null, // null = viewing the top-level library
+  chapterStarts: new Map(), // sentenceIndex -> chapter, for the open document
   currentDoc: null,
   idx: 0,
   isPlaying: false,
@@ -108,6 +109,7 @@ const els = {};
   "font-inc", "font-dec", "skip-parens", "skip-extras",
   "url-form", "url-input", "url-status",
   "folders-bar", "folder-back-btn", "library-title",
+  "chapter-bar", "chapter-select", "chapter-prev", "chapter-next", "chapter-only",
 ].forEach(id => { els[id] = document.getElementById(id); });
 
 // ---------- Theme ----------
@@ -163,7 +165,9 @@ function splitSentences(text) {
 
   ABBREVIATIONS.forEach(abbr => {
     const escaped = abbr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(escaped, "gi");
+    // Whole-word and case-sensitive: otherwise "St." matches the end of "last."
+    // and "p." the end of "step.", gluing separate sentences together.
+    const re = new RegExp("\\b" + escaped, "g");
     masked = masked.replace(re, m => m.slice(0, -1) + SENTENCE_SPLIT_PLACEHOLDER);
   });
 
@@ -232,7 +236,7 @@ function groupItemsIntoLines(items, pageNum) {
       current.bold = current.bold || bold;
     } else {
       if (current) lines.push(current);
-      current = { text: str, page: pageNum, fontSize, bold };
+      current = { text: str, page: pageNum, fontSize, bold, y };
     }
     lastY = y;
     lastEndX = endX;
@@ -272,6 +276,14 @@ function isHeadingLine(line, bodySize) {
   if (line.bold && sizeRatio >= 0.98 && wordCount <= 12) return true;
   return false;
 }
+
+// Figure/table captions ("Figure 3. ...", "Table 2: ...", "Source: ...") and the
+// stray text that lives inside charts and tables (axis labels, numbers). Body
+// text that merely mentions a figure ("Figure 3 shows ...") has no punctuation
+// right after the number, so it doesn't match.
+const CAPTION_START_RE =
+  /^(?:(?:figure|fig\.?|table|exhibit|plate|photo|photograph|image|illustration|chart|graph|map|diagram|box)\s*\d+[A-Za-z]?\s*(?:[.:\-\u2013\u2014|]|$)|(?:source|sources|note|notes|credit|photo credit|image credit)\s*:)/i;
+const NUMERIC_FRAGMENT_RE = /^[\d\s.,%\-\u2013\u2212+()\/:]+$/;
 
 // Running headers/footers, copyright lines, DOIs, page numbers, journal/volume
 // info, and submission-date lines — the administrative clutter around a paper,
@@ -320,6 +332,8 @@ function buildSentences(lines, bodySize, totalPages) {
   // buffer them and split into sentences together, so a sentence spanning a
   // line-wrap doesn't get cut into fragments at every line break.
   let bodyBuffer = [];
+  let lastLine = null;
+  let captionLines = 0; // >0 while we're inside a multi-line caption
   function flushBody() {
     if (!bodyBuffer.length) return;
     const text = bodyBuffer.map(b => b.text).join(" ");
@@ -337,13 +351,46 @@ function buildSentences(lines, bodySize, totalPages) {
     const key = line.text.toLowerCase().replace(/\d+/g, "#").trim();
     const repeatCount = repeatMap.get(key)?.size || 0;
 
-    if (isBoilerplateLine(line.text, repeatCount, totalPages)) {
+    // "Chapter 1", "Chapter 2", ... become the same string once digits are
+    // masked, so they'd look like a running header repeated on every page —
+    // but a large "Chapter N" line is a real chapter start, not page furniture.
+    const isBigChapterHeading = CHAPTER_TITLE_RE.test(line.text) && line.fontSize / (bodySize || 1) >= 1.15;
+    if (!isBigChapterHeading && isBoilerplateLine(line.text, repeatCount, totalPages)) {
       flushBody();
       sentences.push({ text: line.text, page: line.page, type: "boilerplate" });
       return;
     }
 
     const heading = isHeadingLine(line, bodySize);
+
+    // Captions and chart/table text. A caption continues onto following lines
+    // while they stay tightly spaced (no paragraph gap), at body size or
+    // smaller, on the same page and column (gap > 0 means still moving down).
+    const prevLine = lastLine && lastLine.page === line.page ? lastLine : null;
+    lastLine = line;
+    const sizeRatio = line.fontSize / (bodySize || 1);
+    const gap = prevLine ? prevLine.y - line.y : -1;
+    const isCaptionStart = CAPTION_START_RE.test(line.text);
+    const continuesCaption =
+      captionLines > 0 && captionLines < 6 && !heading && gap > 0 &&
+      gap <= line.fontSize * 1.45 && sizeRatio <= 1.02;
+    const isFigureFragment =
+      !heading && (sizeRatio < 0.88 || (NUMERIC_FRAGMENT_RE.test(line.text) && line.text.length <= 24));
+
+    if (isCaptionStart || continuesCaption || isFigureFragment) {
+      flushBody();
+      captionLines = isFigureFragment && !isCaptionStart && !continuesCaption ? 0 : captionLines + 1;
+      sentences.push({ text: line.text, page: line.page, type: "caption" });
+      return;
+    }
+    captionLines = 0;
+
+    if (line.page === 1 && phase === "before-title" && heading && CHAPTER_TITLE_RE.test(line.text)) {
+      flushBody();
+      sentences.push({ text: line.text, page: line.page, type: "heading" });
+      phase = "done";
+      return;
+    }
 
     if (line.page === 1 && phase === "before-title") {
       if (heading) {
@@ -399,14 +446,118 @@ async function extractPdf(file) {
 
   const bodySize = computeBodyFontSize(allLines);
   const sentences = buildSentences(allLines, bodySize, pdf.numPages);
+  const outline = await getPdfOutline(pdf);
+  const chapters = buildChapters(sentences, outline);
 
-  return { sentences, totalPages: pdf.numPages };
+  return { sentences, totalPages: pdf.numPages, chapters };
+}
+
+// ---------- Chapters ----------
+const NUMBER_WORDS = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty";
+const CHAPTER_TITLE_RE = new RegExp(`^(?:chapter|unit|part|module|lesson)\\s+(?:\\d+|[ivxlcdm]+|${NUMBER_WORDS})\\b`, "i");
+
+// A PDF's own bookmarks (its table of contents) are the most reliable chapter
+// list when the file has them — books and course readings usually do.
+async function getPdfOutline(pdf) {
+  try {
+    const outline = await pdf.getOutline();
+    if (!outline || !outline.length) return [];
+
+    async function pageOf(item) {
+      let dest = item.dest;
+      if (typeof dest === "string") dest = await pdf.getDestination(dest);
+      if (!Array.isArray(dest)) return null;
+      const ref = dest[0];
+      if (typeof ref === "number") return ref + 1;
+      return (await pdf.getPageIndex(ref)) + 1;
+    }
+
+    // If there are only a couple of top-level entries (e.g. one book-title
+    // entry with the real chapters nested inside), include one level down.
+    const items = outline.length < 3 ? outline.flatMap(o => [o, ...(o.items || [])]) : outline;
+    const result = [];
+    for (const item of items) {
+      const title = (item.title || "").replace(/\s+/g, " ").trim();
+      const page = await pageOf(item).catch(() => null);
+      if (title && page) result.push({ title, page });
+    }
+    return result;
+  } catch (err) {
+    console.warn("Couldn't read PDF outline:", err);
+    return [];
+  }
+}
+
+const normForMatch = t => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+// Maps a bookmark (title + page) to the sentence where that chapter begins.
+function locateChapterStart(sentences, title, page) {
+  const want = normForMatch(title);
+  const onOrAfter = [];
+  for (let i = 0; i < sentences.length; i++) {
+    if (sentences[i].page >= page && sentences[i].page <= page + 1) onOrAfter.push(i);
+  }
+  if (!onOrAfter.length) return -1;
+  if (want.length >= 4) {
+    const byHeading = onOrAfter.find(i => {
+      const s = sentences[i];
+      if (s.type !== "heading" && s.type !== "title") return false;
+      const have = normForMatch(s.text);
+      // Bookmark "Chapter 1: Foundations" vs heading lines "Chapter 1" / "Foundations":
+      // match either direction so a title split over lines still finds its first line.
+      return have.includes(want.slice(0, 40)) || (have.length >= 4 && want.includes(have));
+    });
+    if (byHeading !== undefined) return byHeading;
+    const byText = onOrAfter.find(i => normForMatch(sentences[i].text).includes(want.slice(0, 40)));
+    if (byText !== undefined) return byText;
+  }
+  const firstOnPage = onOrAfter.find(i => sentences[i].page === page && !["boilerplate", "caption"].includes(sentences[i].type));
+  return firstOnPage !== undefined ? firstOnPage : -1;
+}
+
+// Fallback when the PDF has no usable bookmarks: "Chapter 3 ..."-style
+// headings; failing that, every detected heading is offered as a "section".
+function deriveChaptersFromHeadings(sentences) {
+  const heads = [];
+  sentences.forEach((s, i) => { if (s.type === "heading") heads.push(i); });
+
+  const chapterIdxs = heads.filter(i => CHAPTER_TITLE_RE.test(sentences[i].text));
+  if (chapterIdxs.length >= 2) {
+    return chapterIdxs.map(i => {
+      // "Chapter 3" and its title are often two separate heading lines — join them.
+      const next = sentences[i + 1];
+      const title = next && next.type === "heading" && !CHAPTER_TITLE_RE.test(next.text)
+        ? `${sentences[i].text} — ${next.text}`
+        : sentences[i].text;
+      return { title, sentenceIndex: i, page: sentences[i].page, kind: "chapter" };
+    });
+  }
+  if (heads.length >= 2) {
+    return heads.map(i => ({ title: sentences[i].text, sentenceIndex: i, page: sentences[i].page, kind: "section" }));
+  }
+  return [];
+}
+
+function buildChapters(sentences, outline) {
+  if (outline && outline.length >= 2) {
+    const seen = new Set();
+    const chapters = [];
+    for (const o of outline) {
+      const idx = locateChapterStart(sentences, o.title, o.page);
+      if (idx < 0 || seen.has(idx)) continue;
+      seen.add(idx);
+      chapters.push({ title: o.title, sentenceIndex: idx, page: sentences[idx].page, kind: "chapter" });
+    }
+    chapters.sort((a, b) => a.sentenceIndex - b.sentenceIndex);
+    if (chapters.length >= 2) return chapters;
+  }
+  return deriveChaptersFromHeadings(sentences);
 }
 
 // ---------- Upload flow ----------
 // New documents land in whichever folder you're currently browsing (or
 // ungrouped, at the top level), so uploading while inside a folder just works.
-async function saveAndOpenDoc(title, sentences, totalPages) {
+async function saveAndOpenDoc(title, sentences, totalPages, chapters) {
   const doc = {
     id: crypto.randomUUID(),
     title: title || "Untitled",
@@ -415,6 +566,7 @@ async function saveAndOpenDoc(title, sentences, totalPages) {
     sentences,
     totalPages,
     position: 0,
+    chapters: chapters || [],
     folderId: state.currentFolderId,
   };
   await dbPut(doc);
@@ -430,8 +582,8 @@ async function ingestFile(file, titleHint) {
   els["upload-progress-fill"].style.width = "0%";
 
   try {
-    const { sentences, totalPages } = await extractPdf(file);
-    await saveAndOpenDoc((titleHint || file.name).replace(/\.pdf$/i, ""), sentences, totalPages);
+    const { sentences, totalPages, chapters } = await extractPdf(file);
+    await saveAndOpenDoc((titleHint || file.name).replace(/\.pdf$/i, ""), sentences, totalPages, chapters);
     return true;
   } catch (err) {
     console.error(err);
@@ -478,7 +630,8 @@ function titleFromUrl(url) {
 const HTML_CLUTTER_SELECTORS =
   "nav, header, footer, aside, [role='navigation'], [role='banner'], " +
   "[role='contentinfo'], .toc, #toc, .vector-toc, .vector-page-toolbar, " +
-  ".navbox, .mw-editsection, script, style, noscript, template, svg";
+  ".navbox, .mw-editsection, script, style, noscript, template, svg, " +
+  "figure, figcaption, picture, [class*='caption']";
 
 // Extracts readable article text from a fetched HTML string. The document is
 // parsed but never attached/rendered, so innerText (which depends on layout)
@@ -729,10 +882,14 @@ function openReader(id) {
   state.currentDoc = doc;
   state.idx = doc.position || 0;
   doc.lastOpenedAt = Date.now();
+  // Documents saved before chapter detection existed get chapters derived
+  // from their headings on first open.
+  if (!doc.chapters) doc.chapters = deriveChaptersFromHeadings(doc.sentences);
   dbPut(doc);
 
   els["reader-title"].textContent = doc.title;
   renderReadingPane(doc);
+  populateChapters(doc);
   updateProgressUI();
   scrollToSentence(state.idx, false);
 
@@ -774,6 +931,62 @@ function renderReadingPane(doc) {
   });
 }
 
+// ---------- Chapter navigation ----------
+function populateChapters(doc) {
+  const chapters = doc.chapters || [];
+  state.chapterStarts = new Map(chapters.map(c => [c.sentenceIndex, c]));
+  const select = els["chapter-select"];
+  select.innerHTML = "";
+  chapters.forEach((c, n) => {
+    const opt = document.createElement("option");
+    opt.value = String(c.sentenceIndex);
+    opt.textContent = c.title.length > 70 ? c.title.slice(0, 67) + "…" : c.title;
+    opt.dataset.n = String(n);
+    select.appendChild(opt);
+  });
+  const isChapters = chapters.some(c => c.kind === "chapter");
+  select.title = isChapters ? "Jump to chapter" : "Jump to section";
+  els["chapter-bar"].classList.toggle("hidden", chapters.length < 2);
+}
+
+// Index (into doc.chapters) of the chapter the reading position is currently in.
+function currentChapterIndex() {
+  const chapters = state.currentDoc?.chapters || [];
+  let cur = -1;
+  chapters.forEach((c, n) => { if (c.sentenceIndex <= state.idx) cur = n; });
+  return cur;
+}
+
+function goToChapter(n) {
+  const chapters = state.currentDoc?.chapters || [];
+  if (n < 0 || n >= chapters.length) return;
+  const target = chapters[n].sentenceIndex;
+  state.idx = target;
+  highlightSentence(target);
+  scrollToSentence(target);
+  updateProgressUI();
+  persistPosition();
+  if (state.isPlaying) speakFrom(target);
+}
+
+els["chapter-select"].addEventListener("change", () => {
+  goToChapter(els["chapter-select"].selectedIndex);
+});
+
+els["chapter-next"].addEventListener("click", () => goToChapter(currentChapterIndex() + 1));
+
+els["chapter-prev"].addEventListener("click", () => {
+  const chapters = state.currentDoc?.chapters || [];
+  const cur = currentChapterIndex();
+  // Partway into a chapter, "previous" restarts it; at its very start, go back one.
+  if (cur >= 0 && state.idx > chapters[cur].sentenceIndex) goToChapter(cur);
+  else goToChapter(cur - 1);
+});
+
+els["chapter-only"].addEventListener("change", () => {
+  localStorage.setItem("ra-chapter-only", els["chapter-only"].checked ? "1" : "0");
+});
+
 function updateSkipVisualState() {
   els["reading-pane"].classList.toggle("skip-extras-active", els["skip-extras"].checked);
 }
@@ -797,6 +1010,9 @@ function updateProgressUI() {
   els["progress-text"].textContent = `Sentence ${Math.min(state.idx + 1, total)} / ${total} · Page ${doc.sentences[Math.min(state.idx, total - 1)]?.page ?? "-"}`;
   const pct = total ? (state.idx / total) * 100 : 0;
   els["reader-progress-fill"].style.width = pct + "%";
+
+  const cur = currentChapterIndex();
+  if (cur >= 0 && els["chapter-select"].selectedIndex !== cur) els["chapter-select"].selectedIndex = cur;
 }
 
 function jumpToSentence(i) {
@@ -835,7 +1051,9 @@ function speakFrom(i) {
   speakSentence(i);
 }
 
-function speakSentence(i) {
+// `auto` is true when playback advanced by itself (not from a button or click),
+// which is what lets "one chapter at a time" stop at a chapter boundary.
+function speakSentence(i, auto = false) {
   const doc = state.currentDoc;
   if (!doc) return;
   if (i >= doc.sentences.length) {
@@ -844,15 +1062,32 @@ function speakSentence(i) {
     return;
   }
 
+  const chapter = state.chapterStarts.get(i);
+  if (auto && chapter && els["chapter-only"].checked) {
+    // Finished the chapter — park at the start of the next one, ready to resume.
+    state.idx = i;
+    highlightSentence(i);
+    scrollToSentence(i);
+    updateProgressUI();
+    persistPosition();
+    state.isPlaying = false;
+    setPlayButton(false);
+    return;
+  }
+
   const sentence = doc.sentences[i];
   const skipExtras = els["skip-extras"].checked;
-  const skipTypes = skipExtras && (sentence.type === "title" || sentence.type === "author" || sentence.type === "boilerplate");
+  const skipTypes = skipExtras && ["title", "author", "boilerplate", "caption"].includes(sentence.type);
 
   let spoken = "";
   if (!skipTypes) {
     const raw = sentence.text;
     spoken = els["skip-parens"].checked ? stripCitationsAndAsides(raw) : raw;
     if (sentence.type === "heading" && spoken) spoken = `Heading: ${spoken}`;
+    // A chapter that begins mid-text (no heading line of its own) still gets announced.
+    if (chapter && chapter.kind === "chapter" && sentence.type !== "heading" && spoken) {
+      spoken = `Chapter: ${chapter.title}. ${spoken}`;
+    }
   }
 
   if (!spoken) {
@@ -862,7 +1097,7 @@ function speakSentence(i) {
     scrollToSentence(i);
     updateProgressUI();
     persistPosition();
-    speakSentence(i + 1);
+    speakSentence(i + 1, true);
     return;
   }
 
@@ -881,7 +1116,7 @@ function speakSentence(i) {
   };
 
   utter.onend = () => {
-    if (state.isPlaying) speakSentence(i + 1);
+    if (state.isPlaying) speakSentence(i + 1, true);
   };
 
   utter.onerror = (e) => {
@@ -1078,6 +1313,7 @@ async function init() {
     els["pitch-value"].textContent = parseFloat(savedPitch).toFixed(1);
   }
   els["skip-parens"].checked = localStorage.getItem("ra-skip-parens") === "1";
+  els["chapter-only"].checked = localStorage.getItem("ra-chapter-only") === "1";
   const savedSkipExtras = localStorage.getItem("ra-skip-extras");
   els["skip-extras"].checked = savedSkipExtras === null ? true : savedSkipExtras === "1";
   updateSkipVisualState();
