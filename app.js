@@ -557,7 +557,7 @@ function buildChapters(sentences, outline) {
 // ---------- Upload flow ----------
 // New documents land in whichever folder you're currently browsing (or
 // ungrouped, at the top level), so uploading while inside a folder just works.
-async function saveAndOpenDoc(title, sentences, totalPages, chapters) {
+async function saveAndOpenDoc(title, sentences, totalPages, chapters, open = true) {
   const doc = {
     id: crypto.randomUUID(),
     title: title || "Untitled",
@@ -572,18 +572,18 @@ async function saveAndOpenDoc(title, sentences, totalPages, chapters) {
   await dbPut(doc);
   state.docs.push(doc);
   renderLibrary();
-  openReader(doc.id);
+  if (open) openReader(doc.id);
 }
 
 // Shared by the file picker, the "paste a link" fetcher, and incoming PDFs
 // handed off from the Chrome extension.
-async function ingestFile(file, titleHint) {
+async function ingestFile(file, titleHint, open = true) {
   els["upload-progress"].classList.remove("hidden");
   els["upload-progress-fill"].style.width = "0%";
 
   try {
     const { sentences, totalPages, chapters } = await extractPdf(file);
-    await saveAndOpenDoc((titleHint || file.name).replace(/\.pdf$/i, ""), sentences, totalPages, chapters);
+    await saveAndOpenDoc((titleHint || file.name).replace(/\.pdf$/i, ""), sentences, totalPages, chapters, open);
     return true;
   } catch (err) {
     console.error(err);
@@ -612,6 +612,48 @@ els["file-input"].addEventListener("change", async (e) => {
   if (!file) return;
   e.target.value = "";
   ingestFile(file);
+});
+
+// ---------- Drag & drop (handy on desktop) ----------
+// Drop one or more PDFs anywhere on the library screen. One file opens straight
+// away; several are all added to the library (and the current folder) at once.
+function dragHasFiles(e) {
+  return e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
+}
+const libraryVisible = () => !els["library-view"].classList.contains("hidden");
+
+let dragDepth = 0;
+window.addEventListener("dragenter", (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  dragDepth++;
+  if (libraryVisible()) document.body.classList.add("dragging");
+});
+window.addEventListener("dragover", (e) => {
+  // Without this the browser would just navigate to the dropped file.
+  if (dragHasFiles(e)) e.preventDefault();
+});
+window.addEventListener("dragleave", (e) => {
+  if (!dragHasFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) document.body.classList.remove("dragging");
+});
+window.addEventListener("drop", async (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove("dragging");
+  if (!libraryVisible()) return;
+
+  const files = [...e.dataTransfer.files];
+  const pdfs = files.filter(f => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+  if (!pdfs.length) {
+    alert("That doesn't look like a PDF. Drop a .pdf file to add it.");
+    return;
+  }
+  for (let n = 0; n < pdfs.length; n++) {
+    await ingestFile(pdfs[n], undefined, pdfs.length === 1);
+  }
 });
 
 // ---------- Paste a link to a PDF or webpage (works in any browser, e.g. Safari) ----------

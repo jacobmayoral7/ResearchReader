@@ -40,6 +40,9 @@ A tiny personal website for reading PDFs (papers, book chapters, class readings)
   still read; only real captions ("Figure 3. …") are skipped. Documents uploaded
   before this was added need to be re-uploaded to get chapter detection and caption
   skipping.
+- On a computer you can **drag and drop** one or more PDFs onto the library screen.
+  A single file opens right away; several are all added at once (into the open
+  folder, if you're inside one).
 - Documents can be grouped into folders (e.g. one per class) — each doc card has
   a "move to folder" dropdown, and folders show up as pill-shaped cards at the
   top of the library. Uploading or pasting a link while a folder is open drops
