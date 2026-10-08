@@ -94,6 +94,7 @@ const state = {
   currentFolderId: null, // null = viewing the top-level library
   chapterStarts: new Map(), // sentenceIndex -> chapter, for the open document
   voiceFallbackTried: false,
+  pausedMidSentence: false, // true only while a real, resumable utterance is paused
   currentDoc: null,
   idx: 0,
   isPlaying: false,
@@ -1004,6 +1005,7 @@ function goToChapter(n) {
   const chapters = state.currentDoc?.chapters || [];
   if (n < 0 || n >= chapters.length) return;
   const target = chapters[n].sentenceIndex;
+  discardPausedSpeech();
   state.idx = target;
   highlightSentence(target);
   scrollToSentence(target);
@@ -1059,6 +1061,7 @@ function updateProgressUI() {
 }
 
 function jumpToSentence(i) {
+  discardPausedSpeech();
   state.idx = i;
   highlightSentence(i);
   updateProgressUI();
@@ -1080,8 +1083,24 @@ function currentVoice() {
   return state.voices.find(v => v.voiceURI === id) || null;
 }
 
-function speakFrom(i) {
+// Chrome keeps its "paused" flag even after cancel(). So Pause followed by Stop
+// (or by jumping elsewhere / opening another document) leaves the engine stuck
+// paused, and every later utterance is queued but never spoken — pressing Play
+// then shows "Pause" while staying completely silent. Always un-pause on cancel.
+function hardStopSpeech() {
   speechSynthesis.cancel();
+  speechSynthesis.resume();
+  state.pausedMidSentence = false;
+}
+
+// If a sentence was paused mid-way and you then move somewhere else, drop it so
+// Play starts from where you moved to rather than resuming the old sentence.
+function discardPausedSpeech() {
+  if (state.pausedMidSentence) hardStopSpeech();
+}
+
+function speakFrom(i) {
+  hardStopSpeech();
   const doc = state.currentDoc;
   if (!doc || i >= doc.sentences.length) {
     state.isPlaying = false;
@@ -1195,7 +1214,7 @@ function showSpeechNotice(msg) {
 // built-in (non-Google, non-novelty) voice and retry the same sentence; if
 // that fails too, stop and say so rather than sitting there mute.
 function recoverFromSilentVoice(i, reason) {
-  speechSynthesis.cancel();
+  hardStopSpeech();
   const current = currentVoice();
   const alt = !state.voiceFallbackTried && state.voices.find(v =>
     v.lang.startsWith("en") && v.localService !== false && !isFlakyVoice(v) &&
@@ -1214,7 +1233,7 @@ function recoverFromSilentVoice(i, reason) {
 }
 
 function stopSpeech() {
-  speechSynthesis.cancel();
+  hardStopSpeech();
   state.isPlaying = false;
   setPlayButton(false);
 }
@@ -1229,9 +1248,12 @@ els["play-btn"].addEventListener("click", () => {
   if (state.isPlaying) {
     speechSynthesis.pause();
     state.isPlaying = false;
+    state.pausedMidSentence = true;
     setPlayButton(false);
-  } else if (speechSynthesis.paused) {
+  } else if (state.pausedMidSentence && speechSynthesis.paused && speechSynthesis.speaking) {
+    // genuinely paused partway through a sentence: pick up exactly where it left off
     speechSynthesis.resume();
+    state.pausedMidSentence = false;
     state.isPlaying = true;
     setPlayButton(true);
   } else {
@@ -1245,6 +1267,7 @@ els["stop-btn"].addEventListener("click", () => {
 
 els["prev-btn"].addEventListener("click", () => {
   const wasPlaying = state.isPlaying;
+  discardPausedSpeech();
   const newIdx = Math.max(0, state.idx - 1);
   state.idx = newIdx;
   highlightSentence(newIdx);
@@ -1258,6 +1281,7 @@ els["next-btn"].addEventListener("click", () => {
   const wasPlaying = state.isPlaying;
   const doc = state.currentDoc;
   if (!doc) return;
+  discardPausedSpeech();
   const newIdx = Math.min(doc.sentences.length - 1, state.idx + 1);
   state.idx = newIdx;
   highlightSentence(newIdx);

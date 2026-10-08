@@ -106,6 +106,7 @@ function startInPageReader(payload) {
     const prevHost = document.getElementById("__read_aloud_overlay_host__");
     if (prevHost) {
       window.speechSynthesis.cancel();
+      window.speechSynthesis.resume(); // clear a stuck "paused" flag from the previous player
       prevHost.remove();
     }
     if (window.__readAloudPickerCleanup__) {
@@ -316,6 +317,16 @@ function startInPageReader(payload) {
       let idx = 0;
       let playing = false;
       let fallbackTried = false;
+      let pausedMid = false;
+
+      // Chrome keeps its "paused" flag even after cancel(), which leaves later
+      // speech silent (Play appears to work but nothing is ever spoken). Always
+      // un-pause when cancelling.
+      function hardStop() {
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.resume();
+        pausedMid = false;
+      }
       const noticeEl = shadow.getElementById("notice");
 
       function showNotice(msg) {
@@ -327,7 +338,7 @@ function startInPageReader(payload) {
       // voice and retry this sentence; if that fails too, stop and say so
       // instead of sitting there mute.
       function recover(i, reason) {
-        window.speechSynthesis.cancel();
+        hardStop();
         const current = currentVoice();
         const alt = !fallbackTried && voices.find(function (v) {
           return v.lang && v.lang.startsWith("en") && v.localService !== false &&
@@ -347,7 +358,7 @@ function startInPageReader(payload) {
       }
 
       function speak(i) {
-        window.speechSynthesis.cancel();
+        hardStop();
         if (i >= sentences.length) {
           playing = false;
           playBtn.textContent = "▶";
@@ -392,9 +403,11 @@ function startInPageReader(payload) {
         if (playing) {
           window.speechSynthesis.pause();
           playing = false;
+          pausedMid = true;
           playBtn.textContent = "▶";
-        } else if (window.speechSynthesis.paused) {
+        } else if (pausedMid && window.speechSynthesis.paused && window.speechSynthesis.speaking) {
           window.speechSynthesis.resume();
+          pausedMid = false;
           playing = true;
           playBtn.textContent = "⏸";
         } else {
@@ -405,7 +418,7 @@ function startInPageReader(payload) {
       });
 
       shadow.getElementById("stop").addEventListener("click", function () {
-        window.speechSynthesis.cancel();
+        hardStop();
         playing = false;
         playBtn.textContent = "▶";
         idx = 0;
@@ -436,7 +449,7 @@ function startInPageReader(payload) {
       });
 
       shadow.getElementById("close").addEventListener("click", function () {
-        window.speechSynthesis.cancel();
+        hardStop();
         host.remove();
       });
 

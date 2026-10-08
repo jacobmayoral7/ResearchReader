@@ -1,4 +1,4 @@
-const CACHE_NAME = "read-aloud-v9";
+const CACHE_NAME = "read-aloud-v10";
 const CORE_ASSETS = [
   "./",
   "./index.html",
