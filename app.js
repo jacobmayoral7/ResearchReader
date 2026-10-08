@@ -94,7 +94,7 @@ const state = {
   currentFolderId: null, // null = viewing the top-level library
   chapterStarts: new Map(), // sentenceIndex -> chapter, for the open document
   voiceFallbackTried: false,
-  pausedMidSentence: false, // true only while a real, resumable utterance is paused
+  recovering: false,
   currentDoc: null,
   idx: 0,
   isPlaying: false,
@@ -756,6 +756,8 @@ window.addEventListener("message", (event) => {
     ingestFile(file);
   } else if (data.type === "incoming-page-text") {
     ingestPlainText(data.title, data.text);
+  } else if (data.type === "stop-speech") {
+    yieldSpeechTo("the browser extension");
   }
 });
 
@@ -1005,7 +1007,6 @@ function goToChapter(n) {
   const chapters = state.currentDoc?.chapters || [];
   if (n < 0 || n >= chapters.length) return;
   const target = chapters[n].sentenceIndex;
-  discardPausedSpeech();
   state.idx = target;
   highlightSentence(target);
   scrollToSentence(target);
@@ -1061,7 +1062,6 @@ function updateProgressUI() {
 }
 
 function jumpToSentence(i) {
-  discardPausedSpeech();
   state.idx = i;
   highlightSentence(i);
   updateProgressUI();
@@ -1083,20 +1083,36 @@ function currentVoice() {
   return state.voices.find(v => v.voiceURI === id) || null;
 }
 
-// Chrome keeps its "paused" flag even after cancel(). So Pause followed by Stop
-// (or by jumping elsewhere / opening another document) leaves the engine stuck
-// paused, and every later utterance is queued but never spoken — pressing Play
-// then shows "Pause" while staying completely silent. Always un-pause on cancel.
+// Chrome has ONE speech queue for the whole browser, shared by every tab, window
+// and profile. An utterance that is playing OR merely paused in one place makes
+// speech in every other place wait behind it and never start. So this app never
+// leaves an utterance paused: "Pause" stops speaking and remembers the spot (Play
+// then re-reads that sentence), and starting playback here tells any other Read
+// Aloud window to stop.
 function hardStopSpeech() {
   speechSynthesis.cancel();
-  speechSynthesis.resume();
-  state.pausedMidSentence = false;
 }
 
-// If a sentence was paused mid-way and you then move somewhere else, drop it so
-// Play starts from where you moved to rather than resuming the old sentence.
-function discardPausedSpeech() {
-  if (state.pausedMidSentence) hardStopSpeech();
+// ---- Only one Read Aloud window should be speaking at a time ----
+const speechInstanceId = (crypto.randomUUID && crypto.randomUUID()) || String(Math.random());
+const speechChannel = "BroadcastChannel" in window ? new BroadcastChannel("read-aloud-speech") : null;
+
+function announceSpeechClaim() {
+  if (speechChannel) speechChannel.postMessage({ type: "claim", id: speechInstanceId });
+  // the Chrome extension (if installed) relays this to its own players
+  window.postMessage({ source: "read-aloud-app", type: "claim" }, window.location.origin);
+}
+
+function yieldSpeechTo(who) {
+  if (!state.isPlaying) return;
+  stopSpeech();
+  showSpeechNotice(`Stopped here because reading started in ${who}.`);
+}
+
+if (speechChannel) {
+  speechChannel.onmessage = (e) => {
+    if (e.data && e.data.type === "claim" && e.data.id !== speechInstanceId) yieldSpeechTo("another Read Aloud window");
+  };
 }
 
 function speakFrom(i) {
@@ -1110,8 +1126,15 @@ function speakFrom(i) {
   state.idx = i;
   state.isPlaying = true;
   setPlayButton(true);
-  speakSentence(i);
+  announceSpeechClaim();
+  // Speaking in the same tick as cancel() is flaky on some Chrome/macOS builds
+  // (the new utterance is silently dropped), so give the cancel a moment to land.
+  const token = ++speakFrom.token;
+  setTimeout(() => {
+    if (token === speakFrom.token && state.isPlaying) speakSentence(i);
+  }, 120);
 }
+speakFrom.token = 0;
 
 // `auto` is true when playback advanced by itself (not from a button or click),
 // which is what lets "one chapter at a time" stop at a chapter boundary.
@@ -1173,7 +1196,7 @@ function speakSentence(i, auto = false) {
   // "I pressed Play and nothing happened", so watch for that explicitly.
   let started = false;
   const watchdog = setTimeout(() => {
-    if (!started && state.isPlaying && !speechSynthesis.paused) recoverFromSilentVoice(i, "it never started");
+    if (!started && state.isPlaying) recoverFromSilentVoice(i, "it never started");
   }, 4000);
 
   utter.onstart = () => {
@@ -1210,26 +1233,64 @@ function showSpeechNotice(msg) {
   showSpeechNotice.timer = setTimeout(() => el.classList.add("hidden"), 12000);
 }
 
-// The selected voice failed or went silent. Once, quietly switch to a
-// built-in (non-Google, non-novelty) voice and retry the same sentence; if
-// that fails too, stop and say so rather than sitting there mute.
-function recoverFromSilentVoice(i, reason) {
-  hardStopSpeech();
-  const current = currentVoice();
-  const alt = !state.voiceFallbackTried && state.voices.find(v =>
-    v.lang.startsWith("en") && v.localService !== false && !isFlakyVoice(v) &&
-    voiceScore(v) >= 0 && (!current || v.voiceURI !== current.voiceURI));
+// Silently asks a voice to say one word, to learn whether it can start at all.
+function probeVoiceStarts(voice, ms = 2500) {
+  return new Promise((resolve) => {
+    const u = new SpeechSynthesisUtterance("Test.");
+    u.volume = 0;
+    if (voice) u.voice = voice;
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      speechSynthesis.cancel();
+      resolve(ok);
+    };
+    u.onstart = () => finish(true);
+    u.onerror = () => finish(false);
+    const timer = setTimeout(() => finish(false), ms);
+    speechSynthesis.speak(u);
+  });
+}
 
-  if (alt) {
-    state.voiceFallbackTried = true;
-    els["voice-select"].value = alt.voiceURI;
-    showSpeechNotice(`The "${current ? current.name : "default"}" voice didn't work (${reason}), so I switched to "${alt.name}". You can pick a different voice below.`);
-    speakFrom(i);
-    return;
-  }
+const SPEECH_BLOCKED_MESSAGE =
+  "Chrome isn't starting speech right now. That usually means another tab or window is already reading aloud " +
+  "(or has reading paused) — another Read Aloud tab, the extension's player, or another website. Close or stop " +
+  "that, then press Play. If you can't find it, quit Chrome completely and reopen it.";
+
+// Speech didn't start. First work out WHY: if even a different built-in voice
+// can't start, the voice isn't the problem — Chrome's shared speech queue is
+// blocked by something else, and swapping voices would just be misleading.
+// Otherwise switch (once) to a built-in voice and retry the same sentence.
+async function recoverFromSilentVoice(i, reason) {
+  hardStopSpeech();
   state.isPlaying = false;
-  setPlayButton(false);
-  showSpeechNotice(`Speech stopped (${reason}). Try choosing a different voice from the Voice menu, then press Play.`);
+  if (state.recovering) return;
+  state.recovering = true;
+  try {
+    const current = currentVoice();
+    const alt = !state.voiceFallbackTried && state.voices.find(v =>
+      v.lang.startsWith("en") && v.localService !== false && !isFlakyVoice(v) &&
+      voiceScore(v) >= 0 && (!current || v.voiceURI !== current.voiceURI));
+
+    if (reason === "it never started" && !(await probeVoiceStarts(alt || current))) {
+      setPlayButton(false);
+      showSpeechNotice(SPEECH_BLOCKED_MESSAGE);
+      return;
+    }
+    if (alt) {
+      state.voiceFallbackTried = true;
+      els["voice-select"].value = alt.voiceURI;
+      showSpeechNotice(`The "${current ? current.name : "default"}" voice didn't work (${reason}), so I switched to "${alt.name}". You can pick a different voice below.`);
+      speakFrom(i);
+      return;
+    }
+    setPlayButton(false);
+    showSpeechNotice(`Speech stopped (${reason}). Try choosing a different voice from the Voice menu, then press Play.`);
+  } finally {
+    state.recovering = false;
+  }
 }
 
 function stopSpeech() {
@@ -1246,16 +1307,10 @@ els["play-btn"].addEventListener("click", () => {
   if (!state.currentDoc || !state.currentDoc.sentences.length) return;
 
   if (state.isPlaying) {
-    speechSynthesis.pause();
+    // Pause: stop speaking but keep the place (see note on hardStopSpeech).
     state.isPlaying = false;
-    state.pausedMidSentence = true;
+    hardStopSpeech();
     setPlayButton(false);
-  } else if (state.pausedMidSentence && speechSynthesis.paused && speechSynthesis.speaking) {
-    // genuinely paused partway through a sentence: pick up exactly where it left off
-    speechSynthesis.resume();
-    state.pausedMidSentence = false;
-    state.isPlaying = true;
-    setPlayButton(true);
   } else {
     speakFrom(state.idx);
   }
@@ -1267,7 +1322,6 @@ els["stop-btn"].addEventListener("click", () => {
 
 els["prev-btn"].addEventListener("click", () => {
   const wasPlaying = state.isPlaying;
-  discardPausedSpeech();
   const newIdx = Math.max(0, state.idx - 1);
   state.idx = newIdx;
   highlightSentence(newIdx);
@@ -1281,7 +1335,6 @@ els["next-btn"].addEventListener("click", () => {
   const wasPlaying = state.isPlaying;
   const doc = state.currentDoc;
   if (!doc) return;
-  discardPausedSpeech();
   const newIdx = Math.min(doc.sentences.length - 1, state.idx + 1);
   state.idx = newIdx;
   highlightSentence(newIdx);

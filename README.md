@@ -145,6 +145,13 @@ install it as a real desktop app too, not just on phones:
 
 ## Notes / limits
 
+- Chrome has a single speech queue shared by every tab, window and extension. If one
+  place is reading (or has reading *paused*), another place's speech can sit behind it
+  and never start. So "Pause" here really stops and keeps your place (Play re-reads
+  that sentence), and starting playback in the app, a second app window, or the
+  extension's player stops the others. If Play still does nothing, the app says so;
+  closing other tabs that might be reading, or quitting Chrome fully (Cmd+Q) and
+  reopening, clears it.
 - If a voice errors out or never starts, the app switches once to a built-in voice
   and tells you (instead of silently doing nothing); if that fails too it stops and
   says so. Chrome's "Google ..." voices stream from Google's servers and are the

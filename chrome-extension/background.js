@@ -106,7 +106,6 @@ function startInPageReader(payload) {
     const prevHost = document.getElementById("__read_aloud_overlay_host__");
     if (prevHost) {
       window.speechSynthesis.cancel();
-      window.speechSynthesis.resume(); // clear a stuck "paused" flag from the previous player
       prevHost.remove();
     }
     if (window.__readAloudPickerCleanup__) {
@@ -317,16 +316,29 @@ function startInPageReader(payload) {
       let idx = 0;
       let playing = false;
       let fallbackTried = false;
-      let pausedMid = false;
+      const myId = "ext-" + Math.random().toString(36).slice(2);
 
-      // Chrome keeps its "paused" flag even after cancel(), which leaves later
-      // speech silent (Play appears to work but nothing is ever spoken). Always
-      // un-pause when cancelling.
+      // Chrome has ONE speech queue for the whole browser; an utterance that is
+      // playing OR merely paused in one tab makes speech everywhere else wait
+      // behind it. So this player never leaves an utterance paused: Pause stops
+      // speaking and remembers the spot, and starting here stops any other Read
+      // Aloud player (the app, or this player in another tab).
       function hardStop() {
         window.speechSynthesis.cancel();
-        window.speechSynthesis.resume();
-        pausedMid = false;
       }
+      function claimSpeech() {
+        try { chrome.storage.local.set({ speechClaim: { id: myId, t: Date.now() } }); } catch (e) {}
+      }
+      function onClaim(changes, area) {
+        const c = area === "local" && changes.speechClaim && changes.speechClaim.newValue;
+        if (c && c.id !== myId && playing) {
+          playing = false;
+          hardStop();
+          playBtn.textContent = "▶";
+          showNotice("Stopped because reading started in another Read Aloud window.");
+        }
+      }
+      try { chrome.storage.onChanged.addListener(onClaim); } catch (e) {}
       const noticeEl = shadow.getElementById("notice");
 
       function showNotice(msg) {
@@ -337,24 +349,62 @@ function startInPageReader(payload) {
       // The chosen voice errored or went silent. Once, switch to a built-in
       // voice and retry this sentence; if that fails too, stop and say so
       // instead of sitting there mute.
-      function recover(i, reason) {
+      const BLOCKED_MSG =
+        "Chrome isn't starting speech right now. That usually means another tab or window is already reading aloud " +
+        "(or has reading paused). Close or stop it, then press play. If you can't find it, quit Chrome completely and reopen it.";
+      function probeStarts(voice) {
+        return new Promise(function (resolve) {
+          const u = new SpeechSynthesisUtterance("Test.");
+          u.volume = 0;
+          if (voice) u.voice = voice;
+          let done = false;
+          function finish(ok) {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            window.speechSynthesis.cancel();
+            resolve(ok);
+          }
+          u.onstart = function () { finish(true); };
+          u.onerror = function () { finish(false); };
+          const timer = setTimeout(function () { finish(false); }, 2500);
+          window.speechSynthesis.speak(u);
+        });
+      }
+      let recovering = false;
+      async function recover(i, reason) {
         hardStop();
+        playing = false;
+        if (recovering) return;
+        recovering = true;
+        try {
         const current = currentVoice();
         const alt = !fallbackTried && voices.find(function (v) {
           return v.lang && v.lang.startsWith("en") && v.localService !== false &&
             !/^google\b/i.test(v.name) && voiceScore(v) >= 0 &&
             (!current || v.voiceURI !== current.voiceURI);
         });
+        // If even a different built-in voice can't start, the voice isn't the
+        // problem — Chrome's shared speech queue is blocked by something else.
+        if (reason === "it never started" && !(await probeStarts(alt || current))) {
+          playBtn.textContent = "▶";
+          showNotice(BLOCKED_MSG);
+          return;
+        }
         if (alt) {
           fallbackTried = true;
           voiceSelect.value = alt.voiceURI;
           showNotice('That voice didn\'t work (' + reason + '), so I switched to "' + alt.name + '".');
+          playing = true;
+          playBtn.textContent = "⏸";
           speak(i);
           return;
         }
-        playing = false;
         playBtn.textContent = "▶";
         showNotice("Speech stopped (" + reason + "). Pick a different voice, then press play.");
+        } finally {
+          recovering = false;
+        }
       }
 
       function speak(i) {
@@ -401,18 +451,13 @@ function startInPageReader(payload) {
 
       playBtn.addEventListener("click", function () {
         if (playing) {
-          window.speechSynthesis.pause();
           playing = false;
-          pausedMid = true;
+          hardStop();
           playBtn.textContent = "▶";
-        } else if (pausedMid && window.speechSynthesis.paused && window.speechSynthesis.speaking) {
-          window.speechSynthesis.resume();
-          pausedMid = false;
-          playing = true;
-          playBtn.textContent = "⏸";
         } else {
           playing = true;
           playBtn.textContent = "⏸";
+          claimSpeech();
           speak(idx);
         }
       });
@@ -449,12 +494,15 @@ function startInPageReader(payload) {
       });
 
       shadow.getElementById("close").addEventListener("click", function () {
+        playing = false;
         hardStop();
+        try { chrome.storage.onChanged.removeListener(onClaim); } catch (e) {}
         host.remove();
       });
 
       playing = true;
       playBtn.textContent = "⏸";
+      claimSpeech();
       speak(0);
     }
 
