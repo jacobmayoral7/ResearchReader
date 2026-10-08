@@ -114,12 +114,15 @@ function startInPageReader(payload) {
     }
 
     // Shared clutter exclusion: nav/header/footer/aside, tables of contents,
-    // edit links — used both to keep these out of "read this page" and to
-    // keep TOC/menu list items out of the paragraph picker's candidates.
+    // edit links, and figures/images with their captions — used both to keep
+    // these out of "read this page" and to keep TOC/menu items and captions
+    // out of the paragraph picker's candidates.
     var CLUTTER_SELECTORS =
       "nav, header, footer, aside, [role='navigation'], [role='banner'], " +
       "[role='contentinfo'], .toc, #toc, .vector-toc, .vector-page-toolbar, " +
-      ".navbox, .mw-editsection, script, style, noscript";
+      ".navbox, .mw-editsection, script, style, noscript, " +
+      "figure, figcaption, picture, .caption, .wp-caption, .wp-caption-text, " +
+      ".figcaption, .image-caption, [class*='figure-caption']";
 
     var DOT_PLACEHOLDER = String.fromCharCode(1);
     function splitSentences(t) {
@@ -407,7 +410,7 @@ function startInPageReader(payload) {
       // having plenty of unrelated <p> tags elsewhere (legal text, hidden
       // accessibility banners), so "zero <p> found" is the wrong trigger.
       const semantic = Array.prototype.filter.call(
-        document.querySelectorAll("p, li, blockquote, dd, td, figcaption"),
+        document.querySelectorAll("p, li, blockquote, dd, td"),
         isCandidate
       );
       const leafBlocks = Array.prototype.filter.call(document.querySelectorAll("div, span"), function (el) {

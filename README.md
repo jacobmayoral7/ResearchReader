@@ -103,7 +103,8 @@ without a connection.
   paragraphs don't have to be in the page's original order. Hit the floating
   **Play** button once you've picked what you want.
 - Whole-page extraction uses a lightweight reader-mode heuristic
-  (`<article>`/`<main>`, with nav/header/footer/sidebar/TOC clutter stripped,
+  (`<article>`/`<main>`, with nav/header/footer/sidebar/TOC clutter and
+  figures/images with their captions stripped,
   falling back to the largest text block on the page) — it works well on most
   articles but isn't a full Readability parser, so it can occasionally pick up
   a stray banner or miss on unusual layouts. The paragraph picker uses the same
