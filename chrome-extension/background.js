@@ -176,9 +176,10 @@ function startInPageReader(payload) {
       function voiceScore(v) {
         let score = 0;
         if (HIGH_QUALITY_HINTS.test(v.name)) score += 100;
-        if (/google/i.test(v.name)) score += 40;
+        // Chrome's "Google ..." voices stream from Google's servers: they stall on
+        // long text and fail silently, so they're never the automatic default.
+        if (/^google\b/i.test(v.name)) score -= 60;
         if (NOVELTY_VOICE_NAMES.has(v.name.split(" (")[0].trim())) score -= 100;
-        if (v.localService === false) score += 10;
         if (v.default) score += 5;
         return score;
       }
@@ -265,6 +266,7 @@ function startInPageReader(payload) {
         (prefs.skipParens ? " checked" : "") +
         " /> Skip citations &amp; (parentheses)</label>" +
         "</div>" +
+        '<div class="hint" id="notice" style="display:none"></div>' +
         '<div class="text" id="current-text"></div>' +
         "</div>";
 
@@ -313,6 +315,36 @@ function startInPageReader(payload) {
 
       let idx = 0;
       let playing = false;
+      let fallbackTried = false;
+      const noticeEl = shadow.getElementById("notice");
+
+      function showNotice(msg) {
+        noticeEl.textContent = msg;
+        noticeEl.style.display = "block";
+      }
+
+      // The chosen voice errored or went silent. Once, switch to a built-in
+      // voice and retry this sentence; if that fails too, stop and say so
+      // instead of sitting there mute.
+      function recover(i, reason) {
+        window.speechSynthesis.cancel();
+        const current = currentVoice();
+        const alt = !fallbackTried && voices.find(function (v) {
+          return v.lang && v.lang.startsWith("en") && v.localService !== false &&
+            !/^google\b/i.test(v.name) && voiceScore(v) >= 0 &&
+            (!current || v.voiceURI !== current.voiceURI);
+        });
+        if (alt) {
+          fallbackTried = true;
+          voiceSelect.value = alt.voiceURI;
+          showNotice('That voice didn\'t work (' + reason + '), so I switched to "' + alt.name + '".');
+          speak(i);
+          return;
+        }
+        playing = false;
+        playBtn.textContent = "▶";
+        showNotice("Speech stopped (" + reason + "). Pick a different voice, then press play.");
+      }
 
       function speak(i) {
         window.speechSynthesis.cancel();
@@ -334,8 +366,24 @@ function startInPageReader(payload) {
         u.pitch = parseFloat(pitchInput.value);
         const voice = currentVoice();
         if (voice) u.voice = voice;
+
+        let started = false;
+        const watchdog = setTimeout(function () {
+          if (!started && playing && !window.speechSynthesis.paused) recover(i, "it never started");
+        }, 4000);
+        u.onstart = function () {
+          started = true;
+          clearTimeout(watchdog);
+          fallbackTried = false;
+        };
         u.onend = function () {
+          clearTimeout(watchdog);
           if (playing) speak(i + 1);
+        };
+        u.onerror = function (e) {
+          clearTimeout(watchdog);
+          if (e.error === "interrupted" || e.error === "canceled") return;
+          if (playing) recover(i, e.error);
         };
         window.speechSynthesis.speak(u);
       }
@@ -377,6 +425,7 @@ function startInPageReader(payload) {
       });
 
       voiceSelect.addEventListener("change", function () {
+        fallbackTried = false;
         chrome.storage.local.set({ voiceURI: voiceSelect.value });
         if (playing) speak(idx);
       });

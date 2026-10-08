@@ -1,4 +1,4 @@
-const CACHE_NAME = "read-aloud-v7";
+const CACHE_NAME = "read-aloud-v9";
 const CORE_ASSETS = [
   "./",
   "./index.html",
@@ -27,23 +27,32 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// Stale-while-revalidate: serve from cache instantly (works offline), and
-// refresh the cache from the network in the background when available.
+// App files (same origin): network first, so an update shows up on the very next
+// open instead of one open later. The cached copy is only the offline fallback.
+// "no-cache" makes the browser revalidate instead of trusting its own HTTP cache.
+// The pdf.js files from the CDN are version-pinned and never change, so those are
+// cache-first.
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  const sameOrigin = new URL(event.request.url).origin === self.location.origin;
 
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const fetchPromise = fetch(event.request)
-        .then((response) => {
-          if (response && response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || fetchPromise;
-    })
-  );
+  const remember = (res) => {
+    if (res && res.ok) {
+      const copy = res.clone();
+      caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+    }
+    return res;
+  };
+
+  if (sameOrigin) {
+    event.respondWith(
+      fetch(event.request, { cache: "no-cache" })
+        .then(remember)
+        .catch(() => caches.match(event.request).then((hit) => hit || caches.match("./index.html")))
+    );
+  } else {
+    event.respondWith(
+      caches.match(event.request).then((hit) => hit || fetch(event.request).then(remember))
+    );
+  }
 });

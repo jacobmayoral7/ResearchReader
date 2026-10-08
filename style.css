@@ -561,3 +561,13 @@ body.dragging::after {
   font-weight: 600;
   pointer-events: none;
 }
+
+.speech-notice {
+  padding: 10px 20px;
+  background: #fff3cd;
+  color: #5c4400;
+  border-bottom: 1px solid #e6d28a;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+:root[data-theme="dark"] .speech-notice { background: #3a3012; color: #f0dc9a; border-color: #5a4a1a; }

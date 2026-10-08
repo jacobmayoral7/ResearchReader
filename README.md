@@ -145,6 +145,12 @@ install it as a real desktop app too, not just on phones:
 
 ## Notes / limits
 
+- If a voice errors out or never starts, the app switches once to a built-in voice
+  and tells you (instead of silently doing nothing); if that fails too it stops and
+  says so. Chrome's "Google ..." voices stream from Google's servers and are the
+  usual culprit, so they're listed under "Other voices" and are never the automatic
+  default (they stay selectable). The app files are fetched fresh whenever you're
+  online, so updates show on the next open, and the saved copy is only used offline.
 - Text-to-speech quality and available voices depend on your browser and OS (Chrome,
   Edge, and Safari all ship different voice sets). For less robotic speech on a Mac,
   install an Enhanced/Premium voice via System Settings → Accessibility → Spoken

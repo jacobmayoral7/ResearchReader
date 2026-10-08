@@ -93,6 +93,7 @@ const state = {
   folders: [],
   currentFolderId: null, // null = viewing the top-level library
   chapterStarts: new Map(), // sentenceIndex -> chapter, for the open document
+  voiceFallbackTried: false,
   currentDoc: null,
   idx: 0,
   isPlaying: false,
@@ -109,7 +110,7 @@ const els = {};
   "font-inc", "font-dec", "skip-parens", "skip-extras",
   "url-form", "url-input", "url-status",
   "folders-bar", "folder-back-btn", "library-title",
-  "chapter-bar", "chapter-select", "chapter-prev", "chapter-next", "chapter-only",
+  "chapter-bar", "chapter-select", "chapter-prev", "chapter-next", "chapter-only", "speech-notice",
 ].forEach(id => { els[id] = document.getElementById(id); });
 
 // ---------- Theme ----------
@@ -1149,7 +1150,17 @@ function speakSentence(i, auto = false) {
   const voice = currentVoice();
   if (voice) utter.voice = voice;
 
+  // A voice that never starts (and never reports an error) looks exactly like
+  // "I pressed Play and nothing happened", so watch for that explicitly.
+  let started = false;
+  const watchdog = setTimeout(() => {
+    if (!started && state.isPlaying && !speechSynthesis.paused) recoverFromSilentVoice(i, "it never started");
+  }, 4000);
+
   utter.onstart = () => {
+    started = true;
+    clearTimeout(watchdog);
+    state.voiceFallbackTried = false;
     state.idx = i;
     highlightSentence(i);
     scrollToSentence(i);
@@ -1158,16 +1169,48 @@ function speakSentence(i, auto = false) {
   };
 
   utter.onend = () => {
+    clearTimeout(watchdog);
     if (state.isPlaying) speakSentence(i + 1, true);
   };
 
   utter.onerror = (e) => {
-    if (e.error !== "interrupted" && e.error !== "canceled") {
-      console.error("Speech error:", e.error);
-    }
+    clearTimeout(watchdog);
+    if (e.error === "interrupted" || e.error === "canceled") return;
+    console.error("Speech error:", e.error);
+    if (state.isPlaying) recoverFromSilentVoice(i, e.error);
   };
 
   speechSynthesis.speak(utter);
+}
+
+function showSpeechNotice(msg) {
+  const el = els["speech-notice"];
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  clearTimeout(showSpeechNotice.timer);
+  showSpeechNotice.timer = setTimeout(() => el.classList.add("hidden"), 12000);
+}
+
+// The selected voice failed or went silent. Once, quietly switch to a
+// built-in (non-Google, non-novelty) voice and retry the same sentence; if
+// that fails too, stop and say so rather than sitting there mute.
+function recoverFromSilentVoice(i, reason) {
+  speechSynthesis.cancel();
+  const current = currentVoice();
+  const alt = !state.voiceFallbackTried && state.voices.find(v =>
+    v.lang.startsWith("en") && v.localService !== false && !isFlakyVoice(v) &&
+    voiceScore(v) >= 0 && (!current || v.voiceURI !== current.voiceURI));
+
+  if (alt) {
+    state.voiceFallbackTried = true;
+    els["voice-select"].value = alt.voiceURI;
+    showSpeechNotice(`The "${current ? current.name : "default"}" voice didn't work (${reason}), so I switched to "${alt.name}". You can pick a different voice below.`);
+    speakFrom(i);
+    return;
+  }
+  state.isPlaying = false;
+  setPlayButton(false);
+  showSpeechNotice(`Speech stopped (${reason}). Try choosing a different voice from the Voice menu, then press Play.`);
 }
 
 function stopSpeech() {
@@ -1238,7 +1281,8 @@ els["pitch-slider"].addEventListener("input", () => {
 });
 
 els["voice-select"].addEventListener("change", () => {
-  localStorage.setItem("ra-voice", els["voice-select"].value);
+  localStorage.setItem("ra-voice-pref", els["voice-select"].value);
+  state.voiceFallbackTried = false;
   if (state.isPlaying) speakFrom(state.idx);
 });
 
@@ -1264,12 +1308,16 @@ const NOVELTY_VOICE_NAMES = new Set([
   "Trinoids", "Whisper", "Wobble", "Zarvox",
 ]);
 
+// Chrome's "Google ..." voices are streamed from Google's servers: they need a
+// connection, stall on long passages, and fail silently when something's off.
+// They stay selectable, but are never the automatic default.
+const isFlakyVoice = v => /^google\b/i.test(v.name);
+
 function voiceScore(v) {
   let score = 0;
   if (HIGH_QUALITY_HINTS.test(v.name)) score += 100;
-  if (/google/i.test(v.name)) score += 40;
+  if (isFlakyVoice(v)) score -= 60;
   if (NOVELTY_VOICE_NAMES.has(v.name.split(" (")[0].trim())) score -= 100;
-  if (v.localService === false) score += 10;
   if (v.default) score += 5;
   return score;
 }
@@ -1277,7 +1325,11 @@ function voiceScore(v) {
 function populateVoices() {
   state.voices = speechSynthesis.getVoices();
   const select = els["voice-select"];
-  const savedVoice = localStorage.getItem("ra-voice");
+  // "ra-voice-pref" only ever holds a voice the user picked themselves. (The old
+  // "ra-voice" key also stored the automatic default, which baked a bad
+  // default in permanently — so it's ignored and cleaned up.)
+  localStorage.removeItem("ra-voice");
+  const savedVoice = localStorage.getItem("ra-voice-pref");
   select.innerHTML = "";
 
   const englishVoices = state.voices.filter(v => v.lang.startsWith("en"));
@@ -1309,7 +1361,6 @@ function populateVoices() {
     select.value = savedVoice;
   } else if (recommended.length) {
     select.value = recommended[0].v.voiceURI;
-    localStorage.setItem("ra-voice", select.value);
   }
 }
 
