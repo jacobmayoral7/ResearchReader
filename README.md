@@ -49,6 +49,19 @@ A tiny personal website for reading PDFs (papers, book chapters, class readings)
   the new document straight into that folder. Deleting a folder only ungroups
   its documents; it never deletes them.
 
+- **Skips the References/Bibliography section** (everything after a "References"
+  heading until the next appendix or chapter), and doesn't read web links or DOIs
+  aloud — one toggle, on by default. Documents saved earlier pick this up when opened.
+- **Word-by-word highlighting** of what's being spoken (where the voice reports word
+  positions; Chrome's online "Google" voices don't).
+- **Skip ±15 seconds** (↺ 15 / 15 ↻, or Shift+←/→), estimated from your speed setting.
+- **Sleep timer**: 5 minutes to 1 hour, or "End of chapter".
+- **Pronunciations & skipped words**: teach it to say "ATP" as "A T P", or leave the
+  replacement empty to never read a word. Saved on this device.
+- **Headphone / media-key controls** on desktop (play, pause, next, previous, ±15 s).
+  Not on iPhone: iOS stops browser speech when the screen locks, so listening with the
+  screen off needs a different kind of voice (pre-rendered audio) than this app uses.
+
 ## Running it locally
 
 No build step needed — it's plain HTML/CSS/JS. Just serve the folder, e.g.:

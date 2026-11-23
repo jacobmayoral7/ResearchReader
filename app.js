@@ -112,6 +112,8 @@ const els = {};
   "url-form", "url-input", "url-status",
   "folders-bar", "folder-back-btn", "library-title",
   "chapter-bar", "chapter-select", "chapter-prev", "chapter-next", "chapter-only", "speech-notice",
+  "back15-btn", "fwd15-btn", "skip-refs", "sleep-select", "sleep-left",
+  "pron-btn", "pron-dialog", "pron-form", "pron-from", "pron-to", "pron-list",
 ].forEach(id => { els[id] = document.getElementById(id); });
 
 // ---------- Theme ----------
@@ -429,6 +431,28 @@ function buildSentences(lines, bodySize, totalPages) {
   });
 
   flushBody();
+  return markReferenceSections(sentences);
+}
+
+// ---------- References section ----------
+// Everything from a "References"/"Bibliography" heading until the next real
+// section (appendix, acknowledgments, a new chapter...) is typed "references",
+// so playback can skip it. Safe to run repeatedly (also used on older saved docs).
+const REF_HEADING_RE = /^(?:(?:\d+|[ivx]+)[.)]?\s+)?(?:references?(?:\s+cited)?|reference\s+list|bibliography|works\s+cited|literature\s+cited)\s*:?$/i;
+const REF_END_RE = /^(?:(?:\d+|[ivx]+|[a-z])[.)]?\s+)?(?:appendix|appendices|supplement|supplementary|acknowledg|about\s+the\s+authors?|author\s+(?:contributions|information)|index|glossary|notes?)\b/i;
+
+function markReferenceSections(sentences) {
+  let inRefs = false;
+  sentences.forEach(s => {
+    const isHeading = s.type === "heading";
+    if ((isHeading || s.type === "references") && REF_HEADING_RE.test(s.text.trim())) {
+      inRefs = true;
+      s.type = "references";
+    } else if (inRefs) {
+      if (isHeading && (REF_END_RE.test(s.text.trim()) || CHAPTER_TITLE_RE.test(s.text.trim()))) inRefs = false;
+      else s.type = "references";
+    }
+  });
   return sentences;
 }
 
@@ -930,6 +954,7 @@ function openReader(id) {
   doc.lastOpenedAt = Date.now();
   // Documents saved before chapter detection existed get chapters derived
   // from their headings on first open.
+  markReferenceSections(doc.sentences);
   if (!doc.chapters) doc.chapters = deriveChaptersFromHeadings(doc.sentences);
   dbPut(doc);
 
@@ -945,6 +970,8 @@ function openReader(id) {
 
 function closeReader() {
   stopSpeech();
+  els["sleep-select"].value = "0";
+  setSleepTimer("0");
   if (state.currentDoc) {
     state.currentDoc.position = state.idx;
     dbPut(state.currentDoc);
@@ -993,6 +1020,7 @@ function populateChapters(doc) {
   const isChapters = chapters.some(c => c.kind === "chapter");
   select.title = isChapters ? "Jump to chapter" : "Jump to section";
   els["chapter-bar"].classList.toggle("hidden", chapters.length < 2);
+  els["sleep-select"].querySelector('option[value="chapter"]').disabled = chapters.length < 2;
 }
 
 // Index (into doc.chapters) of the chapter the reading position is currently in.
@@ -1035,9 +1063,11 @@ els["chapter-only"].addEventListener("change", () => {
 
 function updateSkipVisualState() {
   els["reading-pane"].classList.toggle("skip-extras-active", els["skip-extras"].checked);
+  els["reading-pane"].classList.toggle("skip-refs-active", els["skip-refs"].checked);
 }
 
 function highlightSentence(i) {
+  clearWordHighlight();
   const prev = els["reading-pane"].querySelector(".sentence.active");
   if (prev) prev.classList.remove("active");
   const el = document.getElementById(`sent-${i}`);
@@ -1091,6 +1121,73 @@ function currentVoice() {
 // Aloud window to stop.
 function hardStopSpeech() {
   speechSynthesis.cancel();
+  clearWordHighlight();
+}
+
+// ---------- Word-by-word highlighting ----------
+// Uses the CSS Custom Highlight API so no DOM is rebuilt while reading. The spoken
+// text differs from the displayed text (skipped parentheses, "Heading:" prefix,
+// pronunciation fixes), so each spoken word is matched forward to the next
+// displayed word instead of mapping character offsets.
+const wordHighlightSupported = typeof Highlight === "function" && typeof CSS !== "undefined" && "highlights" in CSS;
+const normWord = w => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+
+function tokenizeWords(text) {
+  const tokens = [];
+  for (const m of text.matchAll(/\S+/g)) {
+    const norm = normWord(m[0]);
+    if (norm) tokens.push({ start: m.index, end: m.index + m[0].length, norm });
+  }
+  return tokens;
+}
+
+function clearWordHighlight() {
+  if (wordHighlightSupported) CSS.highlights.delete("ra-word");
+}
+
+function showWordHighlight(i, token) {
+  if (!wordHighlightSupported) return;
+  const node = document.getElementById(`sent-${i}`)?.firstChild;
+  if (!node || node.nodeType !== Node.TEXT_NODE) return;
+  try {
+    const range = new Range();
+    range.setStart(node, token.start);
+    range.setEnd(node, token.end);
+    CSS.highlights.set("ra-word", new Highlight(range));
+  } catch { /* text changed under us; skip this word */ }
+}
+
+// ---------- Pronunciations & skipped words ----------
+let pronunciations = [];
+let pronRegexes = [];
+try { pronunciations = JSON.parse(localStorage.getItem("ra-pron") || "[]"); } catch { pronunciations = []; }
+
+function compilePronunciations() {
+  pronRegexes = pronunciations.map(({ from, to }) => ({
+    re: new RegExp(
+      "(?<![\\p{L}\\p{N}])" +
+      from.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+") +
+      "(?![\\p{L}\\p{N}])", "giu"),
+    to,
+  }));
+}
+compilePronunciations();
+
+function applyPronunciations(text) {
+  if (!pronRegexes.length) return text;
+  let out = text;
+  pronRegexes.forEach(({ re, to }) => { out = out.replace(re, () => to); });
+  if (out === text) return text;
+  return out.replace(/\s+([,.;:!?])(?!\d)/g, "$1").replace(/\s{2,}/g, " ").trim();
+}
+
+// Web links and DOIs are noise when read aloud.
+function stripWebLinks(text) {
+  const out = text
+    .replace(/\b(?:https?:\/\/|www\.)[^\s<>]*[^\s<>.,;:!?)\]]/gi, "")
+    .replace(/\b(?:doi:\s*)?10\.\d{4,9}\/[^\s<>]*[^\s<>.,;:!?)\]]/gi, "");
+  if (out === text) return text;
+  return out.replace(/\s+([,.;:!?])(?!\d)/g, "$1").replace(/\s{2,}/g, " ").trim();
 }
 
 // ---- Only one Read Aloud window should be speaking at a time ----
@@ -1114,6 +1211,94 @@ if (speechChannel) {
     if (e.data && e.data.type === "claim" && e.data.id !== speechInstanceId) yieldSpeechTo("another Read Aloud window");
   };
 }
+
+// Which sentences are skipped right now, given the toggles.
+function isSkippedSentence(s) {
+  const t = s.type || "body";
+  if (els["skip-extras"].checked && ["title", "author", "boilerplate", "caption"].includes(t)) return true;
+  if (els["skip-refs"].checked && t === "references") return true;
+  return false;
+}
+
+// ---------- Sleep timer ----------
+const sleep = { endsAt: 0, timer: null, chapter: false };
+
+function setSleepTimer(value) {
+  clearInterval(sleep.timer);
+  sleep.timer = null;
+  sleep.endsAt = 0;
+  sleep.chapter = false;
+  els["sleep-left"].textContent = "";
+  if (value === "chapter") {
+    sleep.chapter = true;
+    els["sleep-left"].textContent = "(chapter end)";
+  } else if (Number(value) > 0) {
+    sleep.endsAt = Date.now() + Number(value) * 60000;
+    sleep.timer = setInterval(tickSleepTimer, 1000);
+    tickSleepTimer();
+  }
+}
+
+function tickSleepTimer() {
+  const left = sleep.endsAt - Date.now();
+  if (left <= 0) {
+    finishSleepTimer("Sleep timer finished, so reading stopped.");
+    return;
+  }
+  const total = Math.ceil(left / 1000);
+  els["sleep-left"].textContent = `(${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")})`;
+}
+
+function finishSleepTimer(message) {
+  els["sleep-select"].value = "0";
+  setSleepTimer("0");
+  stopSpeech();
+  showSpeechNotice(message);
+}
+
+els["sleep-select"].addEventListener("change", () => setSleepTimer(els["sleep-select"].value));
+
+// ---------- Jumping around ----------
+function goToSentence(newIdx) {
+  const wasPlaying = state.isPlaying;
+  state.idx = newIdx;
+  highlightSentence(newIdx);
+  scrollToSentence(newIdx);
+  updateProgressUI();
+  persistPosition();
+  if (wasPlaying) speakFrom(newIdx);
+}
+
+const WORDS_PER_MINUTE = 175; // at 1.0x; only used to estimate how long sentences take
+function estimateSeconds(s) {
+  const words = s.text.split(/\s+/).length;
+  return (words / (WORDS_PER_MINUTE * parseFloat(els["rate-slider"].value))) * 60;
+}
+
+// Moves roughly `seconds` of speech forward or back, ignoring skipped text.
+function skipBySeconds(seconds) {
+  const doc = state.currentDoc;
+  if (!doc || !doc.sentences.length) return;
+  const last = doc.sentences.length - 1;
+  let j = state.idx;
+  let acc = 0;
+  if (seconds > 0) {
+    while (j < last && acc < seconds) {
+      if (!isSkippedSentence(doc.sentences[j])) acc += estimateSeconds(doc.sentences[j]);
+      j++;
+    }
+  } else {
+    while (j > 0 && acc < -seconds) {
+      j--;
+      if (!isSkippedSentence(doc.sentences[j])) acc += estimateSeconds(doc.sentences[j]);
+    }
+  }
+  while (j < last && isSkippedSentence(doc.sentences[j])) j++;
+  goToSentence(j);
+}
+
+els["back15-btn"].addEventListener("click", () => skipBySeconds(-15));
+els["fwd15-btn"].addEventListener("click", () => skipBySeconds(15));
 
 function speakFrom(i) {
   hardStopSpeech();
@@ -1147,8 +1332,25 @@ function speakSentence(i, auto = false) {
     return;
   }
 
+  if (auto && sleep.endsAt && Date.now() >= sleep.endsAt) {
+    state.idx = i;
+    updateProgressUI();
+    persistPosition();
+    finishSleepTimer("Sleep timer finished, so reading stopped.");
+    return;
+  }
+
+  // Run past everything that's being skipped in one go (a reference list can be
+  // hundreds of sentences) instead of saving a position for each one.
+  if (isSkippedSentence(doc.sentences[i])) {
+    let j = i;
+    while (j < doc.sentences.length && isSkippedSentence(doc.sentences[j])) j++;
+    speakSentence(j, true);
+    return;
+  }
+
   const chapter = state.chapterStarts.get(i);
-  if (auto && chapter && els["chapter-only"].checked) {
+  if (auto && chapter && (els["chapter-only"].checked || sleep.chapter)) {
     // Finished the chapter — park at the start of the next one, ready to resume.
     state.idx = i;
     highlightSentence(i);
@@ -1157,22 +1359,19 @@ function speakSentence(i, auto = false) {
     persistPosition();
     state.isPlaying = false;
     setPlayButton(false);
+    if (sleep.chapter) finishSleepTimer("Sleep timer: stopped at the end of the chapter.");
     return;
   }
 
   const sentence = doc.sentences[i];
-  const skipExtras = els["skip-extras"].checked;
-  const skipTypes = skipExtras && ["title", "author", "boilerplate", "caption"].includes(sentence.type);
-
-  let spoken = "";
-  if (!skipTypes) {
-    const raw = sentence.text;
-    spoken = els["skip-parens"].checked ? stripCitationsAndAsides(raw) : raw;
-    if (sentence.type === "heading" && spoken) spoken = `Heading: ${spoken}`;
-    // A chapter that begins mid-text (no heading line of its own) still gets announced.
-    if (chapter && chapter.kind === "chapter" && sentence.type !== "heading" && spoken) {
-      spoken = `Chapter: ${chapter.title}. ${spoken}`;
-    }
+  let spoken = sentence.text;
+  if (els["skip-parens"].checked) spoken = stripCitationsAndAsides(spoken);
+  if (els["skip-refs"].checked) spoken = stripWebLinks(spoken);
+  spoken = applyPronunciations(spoken);
+  if (sentence.type === "heading" && spoken) spoken = `Heading: ${spoken}`;
+  // A chapter that begins mid-text (no heading line of its own) still gets announced.
+  if (chapter && chapter.kind === "chapter" && sentence.type !== "heading" && spoken) {
+    spoken = `Chapter: ${chapter.title}. ${spoken}`;
   }
 
   if (!spoken) {
@@ -1185,6 +1384,9 @@ function speakSentence(i, auto = false) {
     speakSentence(i + 1, true);
     return;
   }
+
+  const wordTokens = tokenizeWords(sentence.text);
+  let wordCursor = 0;
 
   const utter = new SpeechSynthesisUtterance(spoken);
   utter.rate = parseFloat(els["rate-slider"].value);
@@ -1204,14 +1406,32 @@ function speakSentence(i, auto = false) {
     clearTimeout(watchdog);
     state.voiceFallbackTried = false;
     state.idx = i;
+    updateMediaMetadata();
     highlightSentence(i);
     scrollToSentence(i);
     updateProgressUI();
     persistPosition();
   };
 
+  utter.onboundary = (e) => {
+    if (e.name && e.name !== "word") return;
+    const word = e.charLength ? spoken.substr(e.charIndex, e.charLength) : (spoken.slice(e.charIndex).match(/^\S+/) || [""])[0];
+    const w = normWord(word);
+    if (!w) return;
+    const limit = Math.min(wordTokens.length, wordCursor + 12);
+    for (let k = wordCursor; k < limit; k++) {
+      const t = wordTokens[k];
+      if (t.norm === w || (w.length >= 3 && t.norm.startsWith(w))) {
+        showWordHighlight(i, t);
+        wordCursor = t.norm === w ? k + 1 : k;
+        return;
+      }
+    }
+  };
+
   utter.onend = () => {
     clearTimeout(watchdog);
+    clearWordHighlight();
     if (state.isPlaying) speakSentence(i + 1, true);
   };
 
@@ -1301,6 +1521,79 @@ function stopSpeech() {
 
 function setPlayButton(playing) {
   els["play-btn"].textContent = playing ? "⏸ Pause" : "▶ Play";
+  updateMediaSession(playing);
+}
+
+// ---------- Headphone / media-key / lock-screen controls ----------
+// Browsers only show media controls for a page that is playing real audio, and
+// speech synthesis doesn't count, so a silent looping clip stands in for it. Not
+// done on iPhone/iPad: there it can disturb speech, and iOS stops browser speech
+// when the screen locks anyway.
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+let silentAudio = null;
+
+function getSilentAudio() {
+  if (silentAudio || isIOS) return silentAudio;
+  try {
+    const seconds = 10, rate = 8000, n = seconds * rate;
+    const buf = new ArrayBuffer(44 + n);
+    const v = new DataView(buf);
+    const tag = (o, str) => { for (let k = 0; k < str.length; k++) v.setUint8(o + k, str.charCodeAt(k)); };
+    tag(0, "RIFF"); v.setUint32(4, 36 + n, true); tag(8, "WAVE"); tag(12, "fmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true); v.setUint32(28, rate, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+    tag(36, "data"); v.setUint32(40, n, true);
+    new Uint8Array(buf, 44).fill(128); // 8-bit silence
+    silentAudio = new Audio(URL.createObjectURL(new Blob([buf], { type: "audio/wav" })));
+    silentAudio.loop = true;
+  } catch { silentAudio = null; }
+  return silentAudio;
+}
+
+let lastMediaKey = "";
+function updateMediaMetadata() {
+  if (!("mediaSession" in navigator) || !state.currentDoc) return;
+  const cur = currentChapterIndex();
+  const artist = (cur >= 0 && state.currentDoc.chapters[cur]?.title) || "Read Aloud";
+  const key = state.currentDoc.title + "|" + artist;
+  if (key === lastMediaKey) return;
+  lastMediaKey = key;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: state.currentDoc.title,
+    artist,
+    album: "Read Aloud",
+    artwork: [
+      { src: "icons/icon-192.png", sizes: "192x192", type: "image/png" },
+      { src: "icons/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+  });
+}
+
+function updateMediaSession(playing) {
+  if (!("mediaSession" in navigator)) return;
+  navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+  const audio = playing ? getSilentAudio() : silentAudio;
+  if (audio) {
+    if (playing) audio.play().catch(() => {});
+    else audio.pause();
+  }
+  if (playing) updateMediaMetadata();
+}
+
+if ("mediaSession" in navigator) {
+  const handlers = {
+    play: () => { if (!state.isPlaying) els["play-btn"].click(); },
+    pause: () => { if (state.isPlaying) els["play-btn"].click(); },
+    stop: () => stopSpeech(),
+    previoustrack: () => els["prev-btn"].click(),
+    nexttrack: () => els["next-btn"].click(),
+    seekbackward: () => skipBySeconds(-15),
+    seekforward: () => skipBySeconds(15),
+  };
+  Object.entries(handlers).forEach(([action, fn]) => {
+    try { navigator.mediaSession.setActionHandler(action, fn); } catch { /* action not supported here */ }
+  });
 }
 
 els["play-btn"].addEventListener("click", () => {
@@ -1321,27 +1614,12 @@ els["stop-btn"].addEventListener("click", () => {
 });
 
 els["prev-btn"].addEventListener("click", () => {
-  const wasPlaying = state.isPlaying;
-  const newIdx = Math.max(0, state.idx - 1);
-  state.idx = newIdx;
-  highlightSentence(newIdx);
-  scrollToSentence(newIdx);
-  updateProgressUI();
-  persistPosition();
-  if (wasPlaying) speakFrom(newIdx);
+  if (state.currentDoc) goToSentence(Math.max(0, state.idx - 1));
 });
 
 els["next-btn"].addEventListener("click", () => {
-  const wasPlaying = state.isPlaying;
   const doc = state.currentDoc;
-  if (!doc) return;
-  const newIdx = Math.min(doc.sentences.length - 1, state.idx + 1);
-  state.idx = newIdx;
-  highlightSentence(newIdx);
-  scrollToSentence(newIdx);
-  updateProgressUI();
-  persistPosition();
-  if (wasPlaying) speakFrom(newIdx);
+  if (doc) goToSentence(Math.min(doc.sentences.length - 1, state.idx + 1));
 });
 
 // Rate / pitch / voice changes: restart current sentence with new settings
@@ -1365,6 +1643,12 @@ els["voice-select"].addEventListener("change", () => {
 
 els["skip-parens"].addEventListener("change", () => {
   localStorage.setItem("ra-skip-parens", els["skip-parens"].checked ? "1" : "0");
+  if (state.isPlaying) speakFrom(state.idx);
+});
+
+els["skip-refs"].addEventListener("change", () => {
+  localStorage.setItem("ra-skip-refs", els["skip-refs"].checked ? "1" : "0");
+  updateSkipVisualState();
   if (state.isPlaying) speakFrom(state.idx);
 });
 
@@ -1443,6 +1727,58 @@ function populateVoices() {
 
 speechSynthesis.onvoiceschanged = populateVoices;
 
+// ---------- Pronunciations dialog ----------
+function renderPronunciations() {
+  const list = els["pron-list"];
+  list.innerHTML = "";
+  if (!pronunciations.length) {
+    const li = document.createElement("li");
+    li.className = "pron-empty";
+    li.textContent = "Nothing added yet.";
+    list.appendChild(li);
+    return;
+  }
+  pronunciations.forEach((p, n) => {
+    const li = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = p.to ? `${p.from}  →  ${p.to}` : `${p.from}  →  (skipped)`;
+    const del = document.createElement("button");
+    del.className = "icon-btn";
+    del.textContent = "Remove";
+    del.addEventListener("click", () => {
+      pronunciations.splice(n, 1);
+      savePronunciations();
+    });
+    li.append(label, del);
+    list.appendChild(li);
+  });
+}
+
+function savePronunciations() {
+  localStorage.setItem("ra-pron", JSON.stringify(pronunciations));
+  compilePronunciations();
+  renderPronunciations();
+}
+
+els["pron-btn"].addEventListener("click", () => {
+  renderPronunciations();
+  els["pron-dialog"].showModal();
+});
+
+els["pron-form"].addEventListener("submit", (e) => {
+  e.preventDefault();
+  const from = els["pron-from"].value.trim();
+  if (!from) return;
+  const to = els["pron-to"].value.trim();
+  const existing = pronunciations.findIndex(p => p.from.toLowerCase() === from.toLowerCase());
+  if (existing >= 0) pronunciations[existing] = { from, to };
+  else pronunciations.push({ from, to });
+  els["pron-from"].value = "";
+  els["pron-to"].value = "";
+  savePronunciations();
+  els["pron-from"].focus();
+});
+
 // ---------- Keyboard shortcuts ----------
 document.addEventListener("keydown", (e) => {
   if (els["reader-view"].classList.contains("hidden")) return;
@@ -1452,9 +1788,9 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     els["play-btn"].click();
   } else if (e.code === "ArrowRight") {
-    els["next-btn"].click();
+    (e.shiftKey ? els["fwd15-btn"] : els["next-btn"]).click();
   } else if (e.code === "ArrowLeft") {
-    els["prev-btn"].click();
+    (e.shiftKey ? els["back15-btn"] : els["prev-btn"]).click();
   }
 });
 
@@ -1484,6 +1820,8 @@ async function init() {
   }
   els["skip-parens"].checked = localStorage.getItem("ra-skip-parens") === "1";
   els["chapter-only"].checked = localStorage.getItem("ra-chapter-only") === "1";
+  const savedSkipRefs = localStorage.getItem("ra-skip-refs");
+  els["skip-refs"].checked = savedSkipRefs === null ? true : savedSkipRefs === "1";
   const savedSkipExtras = localStorage.getItem("ra-skip-extras");
   els["skip-extras"].checked = savedSkipExtras === null ? true : savedSkipExtras === "1";
   updateSkipVisualState();

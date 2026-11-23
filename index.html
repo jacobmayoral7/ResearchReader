@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="style.css" />
 
 <link rel="manifest" href="manifest.json" />
-<meta name="theme-color" content="#a8492a" />
+<meta name="theme-color" content="#2f5fd0" />
 <link rel="icon" href="icons/icon-192.png" />
 
 <!-- iOS "Add to Home Screen" support -->
@@ -86,8 +86,10 @@
     <footer class="controls">
       <div class="controls-row transport">
         <button id="prev-btn" class="icon-btn" title="Previous sentence (←)">⏮</button>
+        <button id="back15-btn" class="icon-btn" title="Back 15 seconds (Shift+←)">↺ 15</button>
         <button id="play-btn" class="btn primary big" title="Play/Pause (Space)">▶ Play</button>
         <button id="stop-btn" class="icon-btn" title="Stop">⏹</button>
+        <button id="fwd15-btn" class="icon-btn" title="Forward 15 seconds (Shift+→)">15 ↻</button>
         <button id="next-btn" class="icon-btn" title="Next sentence (→)">⏭</button>
       </div>
 
@@ -116,9 +118,43 @@
             Skip title, authors, captions &amp; boilerplate
           </span>
         </label>
+        <label class="slider-label toggle-label" title="Skip the References / Bibliography section at the end, and don't read web links or DOIs aloud">
+          <span class="toggle-row">
+            <input type="checkbox" id="skip-refs" />
+            Skip references &amp; web links
+          </span>
+        </label>
+        <label class="slider-label voice-label" title="Stop reading automatically after a set time">
+          Sleep timer <span id="sleep-left"></span>
+          <select id="sleep-select">
+            <option value="0">Off</option>
+            <option value="5">5 minutes</option>
+            <option value="10">10 minutes</option>
+            <option value="15">15 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="45">45 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="chapter">End of chapter</option>
+          </select>
+        </label>
+        <button id="pron-btn" class="btn" title="Change how words are pronounced, or skip certain words">Pronunciations…</button>
       </div>
     </footer>
   </section>
+
+  <dialog id="pron-dialog" class="pron-dialog">
+    <form method="dialog" class="pron-head">
+      <h3>Pronunciations &amp; skipped words</h3>
+      <button class="icon-btn" aria-label="Close">✕</button>
+    </form>
+    <p class="muted pron-help">Teach the reader how to say a word (e.g. <b>ATP</b> → <b>A T P</b>), or leave “say it as” empty to skip that word entirely. Applies everywhere, to whole words, ignoring capitals.</p>
+    <form id="pron-form" class="pron-form">
+      <input id="pron-from" placeholder="Word or phrase" required autocomplete="off" />
+      <input id="pron-to" placeholder="Say it as… (empty = skip)" autocomplete="off" />
+      <button class="btn primary" type="submit">Add</button>
+    </form>
+    <ul id="pron-list" class="pron-list"></ul>
+  </dialog>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="app.js"></script>
