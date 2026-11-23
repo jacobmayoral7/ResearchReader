@@ -49,6 +49,12 @@ A tiny personal website for reading PDFs (papers, book chapters, class readings)
   the new document straight into that folder. Deleting a folder only ungroups
   its documents; it never deletes them.
 
+- Works on **books with one font size throughout** (text-only reflows, OCR'd
+  textbooks) where headings can't be found by size: it finds "Chapter N" openers and
+  short title-case section headings from the layout instead, skips the front matter
+  (cover, contents, preface) before Chapter 1, and treats end-of-chapter **Key Terms,
+  Study Questions and answer keys** as skippable boilerplate. Tested on a 525-page,
+  22-chapter textbook. Re-upload older documents to get this.
 - **Skips the References/Bibliography section** (everything after a "References"
   heading until the next appendix or chapter), and doesn't read web links or DOIs
   aloud — one toggle, on by default. Documents saved earlier pick this up when opened.

@@ -273,6 +273,7 @@ function computeBodyFontSize(lines) {
 }
 
 function isHeadingLine(line, bodySize) {
+  if (line.hint === "heading" || line.hint === "chapter") return true;
   const wordCount = line.text.split(/\s+/).length;
   if (wordCount > 20) return false;
   const sizeRatio = line.fontSize / (bodySize || 1);
@@ -307,6 +308,7 @@ const BOILERPLATE_PATTERNS = [
   /^no\.?\s*\d+(,|\s|$)/i,
   /^\d{1,4}$/,
   /\b(received|accepted|revised|submitted|published)\b.{0,30}\b(19|20)\d{2}\b/i,
+  /^(?:\d+\s*\.\s*[a-e]\s*,?\s*){2,}$/i, // answer keys: "1. b, 2. b, 3. a"
 ];
 
 function isBoilerplateLine(text, repeatCount, totalPages) {
@@ -358,10 +360,20 @@ function buildSentences(lines, bodySize, totalPages) {
     // "Chapter 1", "Chapter 2", ... become the same string once digits are
     // masked, so they'd look like a running header repeated on every page —
     // but a large "Chapter N" line is a real chapter start, not page furniture.
-    const isBigChapterHeading = CHAPTER_TITLE_RE.test(line.text) && line.fontSize / (bodySize || 1) >= 1.15;
-    if (!isBigChapterHeading && isBoilerplateLine(line.text, repeatCount, totalPages)) {
+    const isBigChapterHeading = line.hint === "chapter" ||
+      (CHAPTER_TITLE_RE.test(line.text) && line.fontSize / (bodySize || 1) >= 1.15);
+    // (Headings found by layout in single-font documents are exempt too: a section
+    // name that also appears in the table of contents is not a running header.)
+    const exempt = isBigChapterHeading || line.hint === "heading";
+    if (!exempt && isBoilerplateLine(line.text, repeatCount, totalPages)) {
       flushBody();
       sentences.push({ text: line.text, page: line.page, type: "boilerplate" });
+      return;
+    }
+
+    if (line.hint === "author") {
+      flushBody();
+      sentences.push({ text: line.text, page: line.page, type: "author" });
       return;
     }
 
@@ -431,7 +443,93 @@ function buildSentences(lines, bodySize, totalPages) {
   });
 
   flushBody();
-  return markReferenceSections(sentences);
+  return markReferenceSections(markStudyAids(sentences));
+}
+
+// ---------- Single-font documents ----------
+// Some PDFs (text-only reflows, OCR'd books) use one font size for everything, so
+// headings can't be told apart by size. There the layout and wording have to do it:
+// a "Chapter N" line followed by a title, and short title-case lines that sit after
+// a bigger-than-usual vertical gap.
+const STOPWORDS = new Set("a an and as at but by for from in into of on or the to via vs with within".split(" "));
+const CREDENTIAL_RE = /\b(?:Ph\.?D|MS|MSc|MEd|MA|MBA|MPH|DPT|DSc|EdD|DHSc|CSCS|TSAC-F|NSCA-CPT|FNSCA|ATC|RD|RSCC|CPT|MD|DO|DC|BS|BA)\b/;
+const KNOWN_SECTION_RE = /^(?:key terms|study questions|learning objectives|conclusion|summary|introduction|abstract|references|bibliography|appendix(?:\s+[a-z0-9]+)?)$/i;
+
+function looksLikeTitleCase(text) {
+  const words = text.split(/\s+/).filter(w => /[A-Za-z]/.test(w));
+  const content = words.filter(w => !STOPWORDS.has(w.toLowerCase()));
+  if (!content.length) return false;
+  return content.filter(w => /^[A-Z0-9(]/.test(w)).length / content.length >= 0.75;
+}
+
+function annotateFlatLines(lines) {
+  const gaps = [];
+  lines.forEach((l, k) => {
+    const prev = lines[k - 1];
+    if (prev && prev.page === l.page && prev.y > l.y) gaps.push(prev.y - l.y);
+  });
+  gaps.sort((a, b) => a - b);
+  const typical = gaps.length ? gaps[Math.floor(gaps.length * 0.4)] || 12 : 12; // normal line spacing
+
+  lines.forEach((l, k) => {
+    if (l.hint) return;
+    const text = l.text;
+    const words = text.split(/\s+/).length;
+
+    if (/^chapter\s+\d+$/i.test(text)) {
+      const next = lines[k + 1];
+      if (next && next.page - l.page <= 1 && /^[A-Za-z]/.test(next.text) &&
+          next.text.split(/\s+/).length <= 14 && !/[.?!]$/.test(next.text)) {
+        l.hint = "chapter";
+        next.hint = "heading";
+        for (let j = k + 2; j < k + 8 && lines[j]; j++) {
+          const t = lines[j].text;
+          if (/^after completing/i.test(t) || !CREDENTIAL_RE.test(t) || t.split(/\s+/).length > 14) break;
+          lines[j].hint = "author";
+        }
+      }
+      return;
+    }
+    if (/^chapter\s+\d+\s*:/i.test(text)) return; // a table-of-contents entry
+
+    const prev = lines[k - 1];
+    const gapRatio = prev && prev.page === l.page && prev.y > l.y ? (prev.y - l.y) / typical : 0;
+    if (KNOWN_SECTION_RE.test(text) ||
+        (gapRatio >= 1.35 && words <= 10 && text.length >= 4 && /^[A-Z]/.test(text) &&
+         !/[.,;:?!)]$/.test(text) && !/^\d+[.)]\s/.test(text) && looksLikeTitleCase(text))) {
+      l.hint = "heading";
+    }
+  });
+}
+
+// Everything before the first real chapter (cover, copyright, contents, preface) is
+// front matter — skipped along with the other boilerplate.
+function markFrontMatter(sentences) {
+  const chapterIdxs = [];
+  sentences.forEach((s, i) => { if (s.type === "heading" && CHAPTER_TITLE_RE.test(s.text)) chapterIdxs.push(i); });
+  if (chapterIdxs.length < 3) return sentences;
+  for (let i = 0; i < chapterIdxs[0]; i++) {
+    if (sentences[i].type !== "title" && sentences[i].type !== "author") sentences[i].type = "boilerplate";
+  }
+  return sentences;
+}
+
+// End-of-chapter study aids (Key Terms, Study Questions, answer keys) are lists, not
+// prose, and read badly aloud. They count as boilerplate, so the same toggle skips them.
+const STUDY_AID_RE = /^(?:key terms|study questions|review questions|discussion questions|practice questions|answers? to (?:the )?(?:study |review )?questions)\s*:?$/i;
+
+function markStudyAids(sentences) {
+  let inAid = false;
+  sentences.forEach(s => {
+    if ((s.type === "heading" || s.type === "boilerplate") && STUDY_AID_RE.test(s.text.trim())) {
+      inAid = true;
+      s.type = "boilerplate";
+    } else if (inAid) {
+      if (s.type === "heading") inAid = false;
+      else if (s.type === "body" || s.type === "caption") s.type = "boilerplate";
+    }
+  });
+  return sentences;
 }
 
 // ---------- References section ----------
@@ -471,7 +569,11 @@ async function extractPdf(file) {
   }
 
   const bodySize = computeBodyFontSize(allLines);
+  // Almost no size/bold variation means headings have to be found from layout.
+  const flat = allLines.filter(l => isHeadingLine(l, bodySize)).length <= Math.max(3, pdf.numPages * 0.08);
+  if (flat) annotateFlatLines(allLines);
   const sentences = buildSentences(allLines, bodySize, pdf.numPages);
+  if (flat) markFrontMatter(sentences);
   const outline = await getPdfOutline(pdf);
   const chapters = buildChapters(sentences, outline);
 
@@ -954,7 +1056,7 @@ function openReader(id) {
   doc.lastOpenedAt = Date.now();
   // Documents saved before chapter detection existed get chapters derived
   // from their headings on first open.
-  markReferenceSections(doc.sentences);
+  markReferenceSections(markStudyAids(doc.sentences));
   if (!doc.chapters) doc.chapters = deriveChaptersFromHeadings(doc.sentences);
   dbPut(doc);
 
